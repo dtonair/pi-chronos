@@ -1,0 +1,44 @@
+{
+  "name": "pi-chronos",
+  "version": "0.1.0",
+  "description": "Pi Chronos Agent Scheduler Extension - durable scheduled agent execution for Pi",
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js",
+    "./extension": "./dist/extension/index.js"
+  },
+  "files": [
+    "dist",
+    "migrations",
+    "schemas",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src test",
+    "format": "biome format --write src test",
+    "format:check": "biome format src test",
+    "test:unit": "vitest run",
+    "test:integration": "vitest run --include test/integration/**/*.test.ts",
+    "test": "vitest run",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.2.4",
+    "@types/node": "22.18.0",
+    "tsx": "^4.23.1",
+    "typescript": "5.8.3",
+    "vitest": "3.2.4"
+  }
+}
