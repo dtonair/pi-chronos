@@ -40,6 +40,19 @@ export type * from "./domain/permission.js";
 export type * from "./domain/run.js";
 // Extension
 export { default as chronosExtension } from "./extension/index.js";
+// Scheduler
+export type * from "./scheduler/cron.js";
+export { createCronCalculator } from "./scheduler/cron.js";
+export { nextIntervalOccurrence, resolveIntervalAnchor } from "./scheduler/interval.js";
+export type { MissedRange } from "./scheduler/missed-run.js";
+export { calculateMissedRange } from "./scheduler/missed-run.js";
+export type { NextRunResult } from "./scheduler/next-run.js";
+export { calculateNextRun } from "./scheduler/next-run.js";
+export { occurrenceKeyFor } from "./scheduler/occurrence-key.js";
+export type { NormalizedOnce } from "./scheduler/once.js";
+export { normalizeOnce } from "./scheduler/once.js";
+export { previewSchedule } from "./scheduler/preview.js";
+export { calculateTimerDelay, isDelayClamped } from "./scheduler/timer-delay.js";
 export type * from "./shared/ports.js";
 // Shared
 export type * from "./shared/result.js";

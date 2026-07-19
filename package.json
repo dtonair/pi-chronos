@@ -2,10 +2,16 @@
   "name": "pi-chronos",
   "version": "0.1.0",
   "description": "Pi Chronos Agent Scheduler Extension - durable scheduled agent execution for Pi",
-  "keywords": ["pi-package", "pi-extension", "scheduler"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "scheduler"
+  ],
   "type": "module",
   "pi": {
-    "extensions": ["./dist/extension/index.js"]
+    "extensions": [
+      "./dist/extension/index.js"
+    ]
   },
   "exports": {
     ".": "./dist/index.js",
@@ -45,5 +51,8 @@
     "typebox": "1.1.38",
     "typescript": "5.8.3",
     "vitest": "3.2.6"
+  },
+  "dependencies": {
+    "cron-parser": "5.4.0"
   }
 }
