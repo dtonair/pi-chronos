@@ -84,12 +84,12 @@ describe("tryCatchAsync", () => {
   it("should return Err for rejecting async fn", async () => {
     const result = await tryCatchAsync(
       () => Promise.reject(new Error("boom")),
-      ChronosErrorCode.DB_MIGRATION_FAILED,
+      ChronosErrorCode.MIGRATION_ERROR,
       "migration failed",
     );
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.code).toBe(ChronosErrorCode.DB_MIGRATION_FAILED);
+      expect(result.error.code).toBe(ChronosErrorCode.MIGRATION_ERROR);
     }
   });
 });

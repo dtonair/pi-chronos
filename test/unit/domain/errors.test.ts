@@ -44,6 +44,38 @@ describe("ChronosError", () => {
       meta: { existingId: "abc" },
     });
   });
+
+  it("exposes every minimum stable specification code", () => {
+    const required = [
+      "VALIDATION_ERROR",
+      "JOB_NOT_FOUND",
+      "JOB_NAME_CONFLICT",
+      "REVISION_CONFLICT",
+      "INVALID_SCHEDULE",
+      "TIMEZONE_INVALID",
+      "APPROVAL_REQUIRED",
+      "APPROVAL_INVALIDATED",
+      "INTERACTIVE_APPROVAL_REQUIRED",
+      "PERMISSION_DENIED",
+      "UNSUPPORTED_TOOL",
+      "UNSUPPORTED_OPERATION",
+      "RUN_NOT_FOUND",
+      "RUN_ALREADY_TERMINAL",
+      "OVERLAP_SKIPPED",
+      "EXECUTOR_UNAVAILABLE",
+      "EXECUTOR_ERROR",
+      "EXECUTION_TIMEOUT",
+      "EXECUTION_CANCELLED",
+      "EXECUTOR_LEASE_EXPIRED",
+      "DATABASE_ERROR",
+      "SQLITE_UNAVAILABLE",
+      "MIGRATION_ERROR",
+      "IMPORT_ERROR",
+      "IMPORT_SOURCE_MISSING",
+      "SANDBOX_UNAVAILABLE",
+    ];
+    expect(Object.values(ChronosErrorCode)).toEqual(expect.arrayContaining(required));
+  });
 });
 
 describe("Run status helpers", () => {

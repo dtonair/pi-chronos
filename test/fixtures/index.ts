@@ -1,9 +1,15 @@
 /**
- * Test fixtures for Phase 1.
+ * Test fixtures for Chronos.
  *
- * No fixtures are required in Phase 1 since domain, API, and config tests
- * are self-contained unit tests. This file exists to satisfy the Phase 1
- * file checklist and will be populated in later phases.
+ * Provides deterministic database fixtures, test data factories,
+ * and fake implementations of injected ports.
  */
 
-export {};
+export type { TestDb } from "./database.js";
+export {
+  createTestApproval,
+  createTestDatabase,
+  createTestJob,
+  createTestRun,
+  DEFAULT_PERMISSIONS,
+} from "./database.js";

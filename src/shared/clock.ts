@@ -8,7 +8,7 @@ export function createSystemClock(): import("./ports.js").Clock {
     return Date.now() as UTCTimestamp;
   }
 
-  const maxTimeoutMs = 2_147_483_647; // Node maximum
+  const maxTimeoutMs = 2_147_000_000; // FR22 clamp below Node's native ceiling
 
   return {
     now,

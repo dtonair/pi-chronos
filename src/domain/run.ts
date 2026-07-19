@@ -79,6 +79,10 @@ export interface Run extends RunIdentity {
   occurrenceAt: UTCTimestamp;
   /** The job revision at dispatch time. */
   jobRevision: number;
+  /** Trigger: scheduled or manual. */
+  trigger: "scheduled" | "manual";
+  /** Attempt number (1-based). */
+  attempt: number;
   /** Scheduler instance id that claimed/owns this run. */
   ownerId?: string;
   /** Lease deadline (ms epoch) when claim expires. */

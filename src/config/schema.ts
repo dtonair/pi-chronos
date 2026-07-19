@@ -1,32 +1,89 @@
+import { type Static, Type } from "typebox";
+import { Value } from "typebox/value";
+import { ChronosError, ChronosErrorCode } from "../domain/errors.js";
+import type { Result } from "../shared/result.js";
+import { err, ok } from "../shared/result.js";
 import { type ChronosConfig, DEFAULT_CONFIG } from "./defaults.js";
 
-/** Deep partial: makes all properties optional recursively */
-type DeepPartial<T> = T extends object ? { [K in keyof T]?: DeepPartial<T[K]> } : T;
+export const ChronosConfigOverridesSchema = Type.Object(
+  {
+    defaultTimezone: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+    minimumIntervalMs: Type.Optional(Type.Integer({ minimum: 1_000 })),
+    defaultTimeoutMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 86_400_000 })),
+    maximumTimeoutMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 86_400_000 })),
+    defaultMaxOutputBytes: Type.Optional(Type.Integer({ minimum: 1_024, maximum: 10_485_760 })),
+    maximumConcurrentRuns: Type.Optional(Type.Integer({ minimum: 1, maximum: 64 })),
+    schedulerPollFallbackMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 300_000 })),
+    leaseDurationMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 3_600_000 })),
+    leaseRenewalMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 3_600_000 })),
+    instanceHeartbeatMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 300_000 })),
+    instanceStaleAfterMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 3_600_000 })),
+    shutdownGraceMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 300_000 })),
+    allowProjectImports: Type.Optional(Type.Boolean()),
+    enableWidget: Type.Optional(Type.Boolean()),
+    enableOsSandbox: Type.Optional(Type.Boolean()),
+    maximumImportBytes: Type.Optional(Type.Integer({ minimum: 1_024, maximum: 10_485_760 })),
+    maximumImportJobs: Type.Optional(Type.Integer({ minimum: 1, maximum: 10_000 })),
+  },
+  { additionalProperties: false },
+);
 
-/**
- * Configuration schema / builder. In Phase 1 this just exports the defaults
- * and provides a merge helper. Full validation via TypeBox will come in Phase 2
- * when config can be loaded from files.
- */
-export function createConfig(overrides?: DeepPartial<ChronosConfig>): ChronosConfig {
-  const base: ChronosConfig = {
-    ...DEFAULT_CONFIG,
-    defaults: { ...DEFAULT_CONFIG.defaults },
-    importLimits: { ...DEFAULT_CONFIG.importLimits },
-  };
+export type ChronosConfigOverrides = Static<typeof ChronosConfigOverridesSchema>;
 
-  if (!overrides) return base;
+function isValidTimezone(timezone: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-  return {
-    ...base,
-    ...overrides,
-    defaults: {
-      ...base.defaults,
-      ...(overrides.defaults ?? {}),
-    },
-    importLimits: {
-      ...base.importLimits,
-      ...(overrides.importLimits ?? {}),
-    },
-  } as ChronosConfig;
+function validationError(message: string, meta?: Record<string, unknown>): ChronosError {
+  return new ChronosError({ code: ChronosErrorCode.VALIDATION_ERROR, message, meta });
+}
+
+export function decodeConfig(value: unknown): Result<ChronosConfig> {
+  const errors = [...Value.Errors(ChronosConfigOverridesSchema, value)];
+  if (errors.length > 0) {
+    return err(
+      validationError("Invalid Chronos configuration", {
+        issues: errors.slice(0, 20).map((issue) => ({
+          path: issue.instancePath,
+          message: issue.message,
+        })),
+      }),
+    );
+  }
+
+  const overrides = Value.Decode(ChronosConfigOverridesSchema, value);
+  const config: ChronosConfig = { ...DEFAULT_CONFIG, ...overrides };
+
+  if (!isValidTimezone(config.defaultTimezone)) {
+    return err(
+      new ChronosError({
+        code: ChronosErrorCode.TIMEZONE_INVALID,
+        message: `Invalid IANA timezone: ${config.defaultTimezone}`,
+        entity: config.defaultTimezone,
+      }),
+    );
+  }
+  if (config.defaultTimeoutMs > config.maximumTimeoutMs) {
+    return err(validationError("defaultTimeoutMs must not exceed maximumTimeoutMs"));
+  }
+  if (config.leaseRenewalMs >= config.leaseDurationMs) {
+    return err(validationError("leaseRenewalMs must be less than leaseDurationMs"));
+  }
+  if (config.instanceHeartbeatMs >= config.instanceStaleAfterMs) {
+    return err(validationError("instanceHeartbeatMs must be less than instanceStaleAfterMs"));
+  }
+
+  return ok(config);
+}
+
+/** Builds trusted configuration and throws a structured error for invalid overrides. */
+export function createConfig(overrides: unknown = {}): ChronosConfig {
+  const result = decodeConfig(overrides);
+  if (!result.ok) throw result.error;
+  return result.value;
 }

@@ -1,60 +1,55 @@
 import type { UTCTimestamp } from "./job.js";
 
-// ─── Path Permissions ─────────────────────
+export type GuardSupportedTool = "read" | "grep" | "find" | "ls" | "edit" | "write" | "bash";
 
-export type PathAccess = "read" | "write";
-
-export interface PathRule {
-  /** Canonical absolute path or glob-like prefix. */
-  pattern: string;
-  access: PathAccess;
+/** The approved permission policy persisted with every job. */
+export interface JobPermissions {
+  tools: string[];
+  shell: {
+    allowed: boolean;
+    /** Exact complete command strings; no substring or regular-expression matching. */
+    commands: string[];
+  };
+  filesystem: {
+    readPaths: string[];
+    writePaths: string[];
+  };
+  network: {
+    allowed: boolean;
+    domains: string[];
+  };
+  extensions: {
+    /** Must remain empty in version 1. */
+    allowedIds: string[];
+  };
+  secrets: {
+    allowedNames: string[];
+  };
 }
 
-// ─── Shell Command Policy ────────────────
+export const DENY_ALL_PERMISSIONS: JobPermissions = {
+  tools: [],
+  shell: { allowed: false, commands: [] },
+  filesystem: { readPaths: [], writePaths: [] },
+  network: { allowed: false, domains: [] },
+  extensions: { allowedIds: [] },
+  secrets: { allowedNames: [] },
+};
 
-/** Exact command string before any shell interpolation. Partial/substring matches rejected. */
-export type ShellCommandPolicy = string;
-
-// ─── Tool Policy ─────────────────
-
-/** Built-in tool names that the guard recognizes. */
-export type GuardSupportedTool = "read" | "write" | "edit" | "bash" | "ls" | "grep" | "find";
-
-export interface ToolPolicy {
-  /** Allowed built-in tools. Empty = none allowed (but the scheduler tool is always blocked). */
-  allowedTools: readonly GuardSupportedTool[];
-  /** Extension tool allowlist. Must be empty - not yet supported. */
-  allowedExtensions: readonly string[];
+export interface EffectivePermissions extends JobPermissions {
+  /** Canonical forms derived from filesystem policy at dispatch time. */
+  canonicalReadPaths: string[];
+  canonicalWritePaths: string[];
 }
-
-// ─── Effective Permissions ──────────────
-
-export interface EffectivePermissions {
-  toolPolicy: ToolPolicy;
-  readPaths: string[];
-  writePaths: string[];
-  shellCommands: ShellCommandPolicy[];
-  envNames: string[];
-  sandboxRequired: boolean;
-}
-
-// ─── Policy Manifest (for child process) ──
 
 export interface PolicyManifest {
-  /** Nonce to prevent replay. */
+  schemaVersion: 1;
   nonce: string;
-  /** Run this manifest authorizes. */
   runId: string;
-  /** Job id this run belongs to. */
   jobId: string;
-  /** Instance id of the owner scheduler. */
   ownerId: string;
-  /** Effective permissions to enforce. */
   permissions: EffectivePermissions;
-  /** The approved fingerprint at dispatch time. */
   fingerprint: string;
-  /** Expiry timestamp after which the manifest is invalid. */
   expiresAt: UTCTimestamp;
-  /** Manifest creation timestamp. */
   issuedAt: UTCTimestamp;
 }

@@ -1,22 +1,13 @@
-import type { ChronosErrorCode } from "../domain/errors.js";
+import type { ChronosError, ChronosErrorCode } from "../domain/errors.js";
 
-// ─── Pagination ───────────────────────
-
-/** Keyset pagination via opaque cursor. */
 export interface PaginationParams {
-  /** Opaque cursor from a previous page. */
   cursor?: string;
-  /** Max items per page (bounded at 100). */
   limit?: number;
 }
 
 export interface PaginationInfo {
-  /** Cursor for the next page, or null if last page. */
   nextCursor: string | null;
-  /** Whether there are more pages. */
   hasMore: boolean;
-  /** Total items across all pages (optional, may be expensive). */
-  total?: number;
 }
 
 export interface PaginatedResult<T> {
@@ -24,105 +15,112 @@ export interface PaginatedResult<T> {
   pagination: PaginationInfo;
 }
 
-// ─── Scheduler Tool Actions ───────────
-
 export const SchedulerAction = {
-  LIST_JOBS: "list_jobs",
-  GET_JOB: "get_job",
-  CREATE_JOB: "create_job",
-  UPDATE_JOB: "update_job",
-  PAUSE_JOB: "pause_job",
-  RESUME_JOB: "resume_job",
-  ARCHIVE_JOB: "archive_job",
-  DELETE_JOB: "delete_job",
+  PREVIEW: "preview",
+  CREATE: "create",
+  GET: "get",
+  LIST: "list",
+  UPDATE: "update",
+  PAUSE: "pause",
+  RESUME: "resume",
+  ARCHIVE: "archive",
+  DELETE: "delete",
   RUN_NOW: "run_now",
   CANCEL_RUN: "cancel_run",
-  GET_RUN_HISTORY: "get_run_history",
-  GET_RUN: "get_run",
-  APPROVE_JOB: "approve_job",
+  HISTORY: "history",
+  APPROVE: "approve",
   REVOKE_APPROVAL: "revoke_approval",
-  PREVIEW_SCHEDULE: "preview_schedule",
-  IMPORT_JOBS: "import_jobs",
-  STATUS: "status",
+  IMPORT: "import",
+  HEALTH: "health",
 } as const;
 
 export type SchedulerAction = (typeof SchedulerAction)[keyof typeof SchedulerAction];
 
-// ─── Scheduler Tool Input ─────────────
-
-export interface SchedulerToolInput {
-  action: SchedulerAction;
-  [key: string]: unknown;
+export interface SchedulerWarning {
+  code: string;
+  message: string;
 }
 
-// ─── Scheduler Result ────────────────
-
-export interface SchedulerErrorResult {
-  ok: false;
+export interface SchedulerErrorPayload {
   code: ChronosErrorCode;
   message: string;
-  entity?: string;
-  meta?: Record<string, unknown>;
+  details?: unknown;
 }
 
 export interface SchedulerOkResult<T = unknown> {
   ok: true;
-  data: T;
+  data?: T;
+  presentation?: string;
+  warnings?: SchedulerWarning[];
+}
+
+export interface SchedulerErrorResult {
+  ok: false;
+  presentation?: string;
+  warnings?: SchedulerWarning[];
+  error: SchedulerErrorPayload;
 }
 
 export type SchedulerResult<T = unknown> = SchedulerOkResult<T> | SchedulerErrorResult;
 
-// ─── Job Summary (for list views) ─────
+export function toSchedulerError(error: ChronosError): SchedulerErrorResult {
+  const details =
+    error.entity === undefined && Object.keys(error.meta).length === 0
+      ? undefined
+      : { entity: error.entity, ...error.meta };
+  return {
+    ok: false,
+    error: {
+      code: error.code,
+      message: error.message,
+      ...(details === undefined ? {} : { details }),
+    },
+  };
+}
 
 export interface JobSummary {
   id: string;
   name: string;
   scope: string;
+  scopeKey: string;
   status: string;
   source: string;
-  scheduleType: string;
+  scheduleKind: string;
   nextRunAt: string | null;
-  successCount: number;
-  failureCount: number;
+  consecutiveFailures: number;
   approved: boolean;
 }
-
-// ─── Run Summary (for history views) ──
 
 export interface RunSummary {
   id: string;
   jobId: string;
   status: string;
-  occurrenceAt: string;
+  scheduledAt: string;
   finishedAt?: string;
   summary?: string;
   exitCode?: number | null;
 }
 
-// ─── Health / Status ──────────────────
-
-export interface SchedulerStatus {
-  ok: boolean;
+export interface SchedulerHealth {
+  databaseState: "closed" | "ready" | "failed";
+  migrationVersion?: number;
+  timerState: "stopped" | "armed" | "waking";
   instanceId?: string;
-  schedulerAlive: boolean;
+  heartbeatAt?: string;
+  queueDepth: number;
+  activeChildren: number;
+  staleLeases: number;
   activeJobs: number;
-  queuedRuns: number;
+  pendingApprovalJobs: number;
   runningRuns: number;
-  lastWake?: string;
-  uptimeMs?: number;
-  errors: string[];
-  features: {
-    sandbox: "active" | "unavailable" | "not_configured";
-    pathPolicy: "active" | "not_configured";
-    importWatch: "active" | "not_configured";
+  lastSchedulerError?: SchedulerErrorPayload;
+  enforcement: {
+    toolAndPathPolicy: "active" | "inactive";
+    osSandbox: "active" | "unavailable" | "disabled";
   };
 }
 
-// ─── Preview Result ───────────────────
-
 export interface SchedulePreview {
-  scheduleType: string;
-  normalized: string;
+  normalizedSchedule: import("../domain/job.js").JobSchedule;
   nextOccurrences: string[];
-  timezone?: string;
 }

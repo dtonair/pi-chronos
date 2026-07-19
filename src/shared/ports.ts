@@ -7,7 +7,7 @@ export interface Clock {
   now(): UTCTimestamp;
   /** Set a timeout that fires once. Returns handle. */
   setTimeout(fn: () => void, ms: number): ClockTimer;
-  /** Node's maximum safe timeout (approx 2147483647 ms). */
+  /** Chronos timer clamp, below Node's signed 32-bit timeout ceiling. */
   readonly maxTimeoutMs: number;
 }
 
@@ -24,7 +24,7 @@ export interface ClockTimer {
 export interface IdGenerator {
   /** Generate a unique id string. */
   generate(): string;
-  /** Bytes of entropy used. */
+  /** Length of generated identifiers in characters. */
   readonly length: number;
 }
 

@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import { createDeterministicIdGenerator, createIdGenerator } from "../../../src/shared/ids.js";
 
 describe("IdGenerator", () => {
-  it("should generate hex strings of the right length", () => {
+  it("should generate UUIDs", () => {
     const gen = createIdGenerator();
-    expect(gen.length).toBe(32);
+    expect(gen.length).toBe(36);
     const id = gen.generate();
-    expect(id).toHaveLength(32);
-    expect(/^[0-9a-f]+$/.test(id)).toBe(true);
+    expect(id).toHaveLength(36);
+    expect(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)).toBe(
+      true,
+    );
   });
 
   it("should produce unique values", () => {

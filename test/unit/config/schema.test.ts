@@ -1,43 +1,67 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_CONFIG } from "../../../src/config/defaults.js";
-import { createConfig } from "../../../src/config/schema.js";
+import { createConfig, decodeConfig } from "../../../src/config/schema.js";
+import { ChronosError, ChronosErrorCode } from "../../../src/domain/errors.js";
 
-describe("Config", () => {
-  it("should return defaults with no overrides", () => {
-    const config = createConfig();
-    expect(config).toEqual(DEFAULT_CONFIG);
-  });
-
-  it("should create independent copies", () => {
-    const a = createConfig();
-    const b = createConfig();
-    expect(a).not.toBe(b);
-    expect(a.defaults).not.toBe(b.defaults);
-  });
-
-  it("should merge top-level overrides", () => {
-    const config = createConfig({ maxConcurrentChildren: 8 });
-    expect(config.maxConcurrentChildren).toBe(8);
-    expect(config.pollIntervalMs).toBe(DEFAULT_CONFIG.pollIntervalMs);
-  });
-
-  it("should merge nested defaults overrides", () => {
-    const config = createConfig({
-      defaults: {
-        timeoutMs: 60_000,
-      },
+describe("Chronos configuration", () => {
+  it("matches the specification defaults", () => {
+    expect(createConfig()).toEqual({
+      defaultTimezone: "UTC",
+      minimumIntervalMs: 60_000,
+      defaultTimeoutMs: 600_000,
+      maximumTimeoutMs: 86_400_000,
+      defaultMaxOutputBytes: 262_144,
+      maximumConcurrentRuns: 4,
+      schedulerPollFallbackMs: 60_000,
+      leaseDurationMs: 60_000,
+      leaseRenewalMs: 20_000,
+      instanceHeartbeatMs: 15_000,
+      instanceStaleAfterMs: 60_000,
+      shutdownGraceMs: 5_000,
+      allowProjectImports: true,
+      enableWidget: true,
+      enableOsSandbox: false,
+      maximumImportBytes: 1_048_576,
+      maximumImportJobs: 1_000,
     });
-    expect(config.defaults.timeoutMs).toBe(60_000);
-    expect(config.defaults.graceMs).toBe(DEFAULT_CONFIG.defaults.graceMs);
   });
 
-  it("should merge nested importLimits overrides", () => {
-    const config = createConfig({
-      importLimits: {
-        maxFileBytes: 5_000_000,
-      },
-    });
-    expect(config.importLimits.maxFileBytes).toBe(5_000_000);
-    expect(config.importLimits.maxJobs).toBe(DEFAULT_CONFIG.importLimits.maxJobs);
+  it("creates independent copies", () => {
+    expect(createConfig()).not.toBe(createConfig());
+  });
+
+  it("merges trusted overrides", () => {
+    const config = createConfig({ maximumConcurrentRuns: 8 });
+    expect(config.maximumConcurrentRuns).toBe(8);
+    expect(config.defaultTimeoutMs).toBe(DEFAULT_CONFIG.defaultTimeoutMs);
+  });
+
+  it("rejects unknown fields", () => {
+    const result = decodeConfig({ arbitraryProjectSetting: true });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe(ChronosErrorCode.VALIDATION_ERROR);
+  });
+
+  it("rejects malformed and out-of-range values", () => {
+    expect(decodeConfig({ maximumConcurrentRuns: 0 }).ok).toBe(false);
+    expect(decodeConfig({ leaseDurationMs: "forever" }).ok).toBe(false);
+  });
+
+  it("rejects invalid IANA timezones with a stable code", () => {
+    const result = decodeConfig({ defaultTimezone: "Mars/Olympus" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe(ChronosErrorCode.TIMEZONE_INVALID);
+  });
+
+  it("rejects semantically inconsistent timing configuration", () => {
+    expect(decodeConfig({ leaseDurationMs: 20_000, leaseRenewalMs: 20_000 }).ok).toBe(false);
+    expect(decodeConfig({ instanceHeartbeatMs: 60_000, instanceStaleAfterMs: 60_000 }).ok).toBe(
+      false,
+    );
+    expect(decodeConfig({ defaultTimeoutMs: 20_000, maximumTimeoutMs: 10_000 }).ok).toBe(false);
+  });
+
+  it("throws a structured error when createConfig receives invalid runtime input", () => {
+    expect(() => createConfig({ unexpected: true })).toThrow(ChronosError);
   });
 });

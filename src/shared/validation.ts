@@ -41,7 +41,7 @@ export function validateString(
   if (!isString(value)) {
     return err(
       new ChronosError({
-        code: ChronosErrorCode.INVALID_JOB_DEFINITION,
+        code: ChronosErrorCode.VALIDATION_ERROR,
         message: `${field} must be a string`,
         meta: { field, actual: typeof value },
       }),
@@ -50,7 +50,7 @@ export function validateString(
   if (value.length < minLength) {
     return err(
       new ChronosError({
-        code: ChronosErrorCode.VALUE_TOO_LONG,
+        code: ChronosErrorCode.VALIDATION_ERROR,
         message: `${field} must be at least ${minLength} characters`,
         meta: { field, minLength, actual: value.length },
       }),
@@ -77,7 +77,7 @@ export function validateInteger(
   if (!isInteger(value)) {
     return err(
       new ChronosError({
-        code: ChronosErrorCode.INVALID_JOB_DEFINITION,
+        code: ChronosErrorCode.VALIDATION_ERROR,
         message: `${field} must be an integer`,
         meta: { field, actual: typeof value },
       }),
@@ -108,7 +108,7 @@ export function validateBoolean(value: unknown, field: string): Result<boolean> 
   if (!isBoolean(value)) {
     return err(
       new ChronosError({
-        code: ChronosErrorCode.INVALID_JOB_DEFINITION,
+        code: ChronosErrorCode.VALIDATION_ERROR,
         message: `${field} must be a boolean`,
         meta: { field, actual: typeof value },
       }),
@@ -121,7 +121,7 @@ export function validateStringArray(value: unknown, field: string): Result<reado
   if (!isArray(value)) {
     return err(
       new ChronosError({
-        code: ChronosErrorCode.INVALID_JOB_DEFINITION,
+        code: ChronosErrorCode.VALIDATION_ERROR,
         message: `${field} must be an array`,
         meta: { field, actual: typeof value },
       }),
@@ -131,7 +131,7 @@ export function validateStringArray(value: unknown, field: string): Result<reado
     if (!isString(value[i])) {
       return err(
         new ChronosError({
-          code: ChronosErrorCode.INVALID_JOB_DEFINITION,
+          code: ChronosErrorCode.VALIDATION_ERROR,
           message: `${field}[${i}] must be a string`,
           meta: { field, index: i, actual: typeof value[i] },
         }),

@@ -3,10 +3,28 @@
 // API types
 export type * from "./api/result.js";
 export { SchedulerAction } from "./api/result.js";
-export type {
-  ImportFile,
-  JobDefinitionInput,
+export {
+  decodeImportFile,
+  decodeSchedulerToolInput,
+  type ImportFile,
+  ImportFileSchema,
+  type JobDefinitionInput,
+  JobDefinitionInputSchema,
+  JobPermissionsSchema,
+  JobScheduleSchema,
+  PaginationParamsSchema,
+  SchedulerHealthSchema,
+  SchedulerResultSchema,
+  type SchedulerToolInput,
+  SchedulerToolInputSchema,
 } from "./api/schemas.js";
+export { type ChronosConfig, DEFAULT_CONFIG } from "./config/defaults.js";
+export {
+  type ChronosConfigOverrides,
+  ChronosConfigOverridesSchema,
+  createConfig,
+  decodeConfig,
+} from "./config/schema.js";
 export type * from "./domain/approval.js";
 export type * from "./domain/audit.js";
 export {
@@ -15,6 +33,7 @@ export {
   type ChronosErrorDetails,
 } from "./domain/errors.js";
 export type * from "./domain/events.js";
+export type * from "./domain/instance.js";
 // Domain types
 export type * from "./domain/job.js";
 export type * from "./domain/permission.js";

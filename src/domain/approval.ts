@@ -1,19 +1,22 @@
 import type { UTCTimestamp } from "./job.js";
 
-export type ApprovalAction = "approved" | "revoked";
+export type ApprovalSource = "tui" | "rpc";
 
-export interface ApprovalEvent {
-  id: string;
+/** Persisted approval record. Interactive confirmation tokens are deliberately not persisted. */
+export interface JobApproval {
+  readonly id: string;
+  readonly jobId: string;
+  readonly fingerprint: string;
+  readonly approvedBy: string;
+  readonly approvedAt: UTCTimestamp;
+  readonly source: ApprovalSource;
+  readonly revokedAt?: UTCTimestamp;
+}
+
+export interface ApprovalDecision {
   jobId: string;
-  action: ApprovalAction;
-  /** The fingerprint at decision time. */
   fingerprint: string;
-  /** User or system identity that approved/revoked. */
   actor: string;
-  /** Confirmation token from user interaction. */
-  confirmationToken?: string;
-  /** Audit timestamp. */
-  timestamp: UTCTimestamp;
-  /** Human-readable reason. */
-  reason?: string;
+  source: ApprovalSource;
+  confirmationToken: string;
 }

@@ -69,12 +69,13 @@ describe("validateString", () => {
   it("rejects non-strings", () => {
     const r = validateString(42, "name");
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error.code).toBe(ChronosErrorCode.INVALID_JOB_DEFINITION);
+    if (!r.ok) expect(r.error.code).toBe(ChronosErrorCode.VALIDATION_ERROR);
   });
 
-  it("rejects strings below minLength", () => {
+  it("rejects strings below minLength with a validation code", () => {
     const r = validateString("ab", "name", 3);
     expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.code).toBe(ChronosErrorCode.VALIDATION_ERROR);
   });
 
   it("rejects strings above maxLength", () => {
