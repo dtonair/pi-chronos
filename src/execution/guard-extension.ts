@@ -1,3 +1,4 @@
+import { accessSync, constants, statSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -8,6 +9,13 @@ import {
   CHRONOS_SEATBELT_PROFILE_ENV,
 } from "../security/sandbox-adapter.js";
 import { createChronosToolDefinitions } from "./guard-tools.js";
+import {
+  CHRONOS_PERMISSION_MODE_ENV,
+  delegatesToPiSeatbelt,
+  PI_SEATBELT_PROFILE_ENV,
+  PI_SEATBELT_PROFILE_SCOPE,
+  PI_SEATBELT_PROFILE_SCOPE_ENV,
+} from "./permission-mode.js";
 import { createRunnerGuard } from "./runner-guard.js";
 import { createSandboxedBashOperations } from "./sandboxed-bash.js";
 
@@ -15,6 +23,11 @@ import { createSandboxedBashOperations } from "./sandboxed-bash.js";
 export default function runnerGuardExtension(pi: ExtensionAPI): void {
   let guard: ReturnType<typeof createRunnerGuard> | undefined;
   const path = process.env.CHRONOS_POLICY_MANIFEST;
+  const permissionMode = process.env[CHRONOS_PERMISSION_MODE_ENV] as
+    | "job"
+    | "pi-seatbelt-sandbox"
+    | undefined;
+  const delegateToPiSeatbelt = delegatesToPiSeatbelt(permissionMode);
   if (typeof pi.registerTool === "function") {
     for (const tool of createChronosToolDefinitions(() => guard)) {
       pi.registerTool(tool as Parameters<typeof pi.registerTool>[0]);
@@ -24,7 +37,7 @@ export default function runnerGuardExtension(pi: ExtensionAPI): void {
   let sandboxRequired = false;
   let maxOutputBytes = 262_144;
   let timeoutMs = 600_000;
-  if (typeof pi.registerTool === "function") {
+  if (typeof pi.registerTool === "function" && !delegateToPiSeatbelt) {
     pi.registerTool(
       createBashToolDefinition(process.cwd(), {
         operations: createSandboxedBashOperations(
@@ -37,8 +50,15 @@ export default function runnerGuardExtension(pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, _ctx) => {
     // Capture policy-control metadata once, then ensure model tools and any
     // descendants cannot discover or replace the parent-controlled profile.
-    sandboxProfilePath = process.env[CHRONOS_SEATBELT_PROFILE_ENV];
-    sandboxRequired = process.env[CHRONOS_SANDBOX_REQUIRED_ENV] === "1";
+    const chronosProfile = process.env[CHRONOS_SEATBELT_PROFILE_ENV];
+    const delegatedProfile = process.env[PI_SEATBELT_PROFILE_ENV];
+    const delegatedProfileReady =
+      delegateToPiSeatbelt &&
+      process.env[PI_SEATBELT_PROFILE_SCOPE_ENV] === PI_SEATBELT_PROFILE_SCOPE &&
+      delegatedProfile !== undefined &&
+      canRead(delegatedProfile);
+    sandboxProfilePath = delegateToPiSeatbelt ? delegatedProfile : chronosProfile;
+    sandboxRequired = delegateToPiSeatbelt || process.env[CHRONOS_SANDBOX_REQUIRED_ENV] === "1";
     maxOutputBytes = boundedNumber(
       process.env.CHRONOS_MAX_OUTPUT_BYTES,
       1_024,
@@ -48,12 +68,15 @@ export default function runnerGuardExtension(pi: ExtensionAPI): void {
     timeoutMs = boundedNumber(process.env.CHRONOS_TIMEOUT_MS, 1_000, 86_400_000, 600_000);
     delete process.env[CHRONOS_SEATBELT_PROFILE_ENV];
     delete process.env[CHRONOS_SANDBOX_REQUIRED_ENV];
+    delete process.env[CHRONOS_PERMISSION_MODE_ENV];
+    delete process.env[PI_SEATBELT_PROFILE_ENV];
+    delete process.env[PI_SEATBELT_PROFILE_SCOPE_ENV];
     delete process.env.CHRONOS_MAX_OUTPUT_BYTES;
     delete process.env.CHRONOS_TIMEOUT_MS;
     // The child must never receive the parent scheduler control tool, even if
     // manifest validation later fails and the guard blocks all execution.
     pi.setActiveTools(pi.getActiveTools().filter((name) => name !== "scheduler"));
-    if (!path) return;
+    if (!path || (delegateToPiSeatbelt && !delegatedProfileReady)) return;
     try {
       const store = new PolicyManifestStore(dirname(path));
       const result = await store.readAndConsume(
@@ -75,6 +98,7 @@ export default function runnerGuardExtension(pi: ExtensionAPI): void {
         sandboxRequired,
         maxOutputBytes,
         timeoutMs,
+        delegateToPiSeatbelt,
       });
       guard.sessionStart(Date.now());
     } catch {
@@ -98,6 +122,21 @@ export default function runnerGuardExtension(pi: ExtensionAPI): void {
     timeoutMs = 600_000;
     if (path) await new PolicyManifestStore(dirname(path)).remove(path);
   });
+}
+
+function canRead(path: string): boolean {
+  try {
+    accessSync(path, constants.R_OK);
+    const info = statSync(path);
+    if (!info.isFile()) return false;
+    if (process.platform !== "win32") {
+      if (typeof process.getuid === "function" && info.uid !== process.getuid()) return false;
+      if ((info.mode & 0o077) !== 0) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function boundedNumber(

@@ -173,18 +173,30 @@ describe("scheduler action validation", () => {
     expectErrorCode(result, ChronosErrorCode.UNSUPPORTED_TOOL);
   });
 
-  it("returns UNSUPPORTED_OPERATION for extension requests", () => {
-    const result = decodeSchedulerToolInput({
+  it("accepts explicit extension sources and rejects duplicates", () => {
+    const accepted = decodeSchedulerToolInput({
       action: "create",
       name: "job",
       prompt: "work",
       schedule: { kind: "interval", everyMs: 60_000 },
       permissions: {
         ...DENY_ALL_PERMISSIONS,
-        extensions: { allowedIds: ["third-party"] },
+        extensions: { allowedIds: ["npm:pi-seatbelt-sandbox"] },
       },
     });
-    expectErrorCode(result, ChronosErrorCode.UNSUPPORTED_OPERATION);
+    expect(accepted.ok).toBe(true);
+
+    const duplicate = decodeSchedulerToolInput({
+      action: "create",
+      name: "job",
+      prompt: "work",
+      schedule: { kind: "interval", everyMs: 60_000 },
+      permissions: {
+        ...DENY_ALL_PERMISSIONS,
+        extensions: { allowedIds: ["npm:pi-seatbelt-sandbox", "npm:pi-seatbelt-sandbox"] },
+      },
+    });
+    expectErrorCode(duplicate, ChronosErrorCode.VALIDATION_ERROR);
   });
 
   it("accepts the complete permission shape", () => {

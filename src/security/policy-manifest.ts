@@ -117,6 +117,19 @@ export class PolicyManifestStore {
         "issuedAt",
       ]);
       const permissions = manifest.permissions as Partial<EffectivePermissions> | undefined;
+      const extensionIds = permissions?.extensions?.allowedIds;
+      const validExtensionIds =
+        Array.isArray(extensionIds) &&
+        extensionIds.length <= 50 &&
+        extensionIds.every(
+          (item, index) =>
+            typeof item === "string" &&
+            item.length > 0 &&
+            item.length <= 256 &&
+            item.trim() === item &&
+            !/[\0\r\n]/.test(item) &&
+            extensionIds.indexOf(item) === index,
+        );
       const broadPath = (item: unknown): boolean =>
         typeof item !== "string" ||
         item === "/" ||
@@ -136,8 +149,7 @@ export class PolicyManifestStore {
         !Array.isArray(permissions.tools) ||
         !Array.isArray(permissions.filesystem?.readPaths) ||
         !Array.isArray(permissions.filesystem?.writePaths) ||
-        !Array.isArray(permissions.extensions?.allowedIds) ||
-        permissions.extensions.allowedIds.length !== 0 ||
+        !validExtensionIds ||
         permissions.filesystem.readPaths.some(broadPath) ||
         permissions.filesystem.writePaths.some(broadPath) ||
         manifest.runId !== expected.runId ||

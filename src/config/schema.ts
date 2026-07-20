@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
 import { ChronosError, ChronosErrorCode } from "../domain/errors.js";
@@ -24,6 +25,10 @@ export const ChronosConfigOverridesSchema = Type.Object(
     enableOsSandbox: Type.Optional(Type.Boolean()),
     maximumImportBytes: Type.Optional(Type.Integer({ minimum: 1_024, maximum: 10_485_760 })),
     maximumImportJobs: Type.Optional(Type.Integer({ minimum: 1, maximum: 10_000 })),
+    permissionMode: Type.Optional(
+      Type.Union([Type.Literal("job"), Type.Literal("pi-seatbelt-sandbox")]),
+    ),
+    piSeatbeltExtension: Type.Optional(Type.String({ minLength: 1, maxLength: 4_096 })),
   },
   { additionalProperties: false },
 );
@@ -76,6 +81,29 @@ export function decodeConfig(value: unknown): Result<ChronosConfig> {
   }
   if (config.instanceHeartbeatMs >= config.instanceStaleAfterMs) {
     return err(validationError("instanceHeartbeatMs must be less than instanceStaleAfterMs"));
+  }
+  if (
+    config.piSeatbeltExtension !== undefined &&
+    (config.piSeatbeltExtension.trim() !== config.piSeatbeltExtension ||
+      /[\0\r\n]/.test(config.piSeatbeltExtension))
+  ) {
+    return err(validationError("piSeatbeltExtension must be trimmed and single-line"));
+  }
+  if (config.permissionMode === "pi-seatbelt-sandbox" && !config.piSeatbeltExtension) {
+    return err(
+      validationError("piSeatbeltExtension is required when permissionMode is pi-seatbelt-sandbox"),
+    );
+  }
+  if (
+    config.piSeatbeltExtension !== undefined &&
+    !isAbsolute(config.piSeatbeltExtension) &&
+    !/^(npm:|git:|https?:\/\/|ssh:\/\/)/.test(config.piSeatbeltExtension)
+  ) {
+    return err(
+      validationError(
+        "piSeatbeltExtension must be an absolute path or an npm, git, HTTP, or SSH source",
+      ),
+    );
   }
 
   return ok(config);

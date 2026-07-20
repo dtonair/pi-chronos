@@ -23,6 +23,7 @@ describe("Chronos configuration", () => {
       enableOsSandbox: false,
       maximumImportBytes: 1_048_576,
       maximumImportJobs: 1_000,
+      permissionMode: "job",
     });
   });
 
@@ -53,12 +54,25 @@ describe("Chronos configuration", () => {
     if (!result.ok) expect(result.error.code).toBe(ChronosErrorCode.TIMEZONE_INVALID);
   });
 
-  it("rejects semantically inconsistent timing configuration", () => {
+  it("rejects semantically inconsistent timing and delegated permission configuration", () => {
     expect(decodeConfig({ leaseDurationMs: 20_000, leaseRenewalMs: 20_000 }).ok).toBe(false);
     expect(decodeConfig({ instanceHeartbeatMs: 60_000, instanceStaleAfterMs: 60_000 }).ok).toBe(
       false,
     );
     expect(decodeConfig({ defaultTimeoutMs: 20_000, maximumTimeoutMs: 10_000 }).ok).toBe(false);
+    expect(decodeConfig({ permissionMode: "pi-seatbelt-sandbox" }).ok).toBe(false);
+    expect(
+      decodeConfig({
+        permissionMode: "pi-seatbelt-sandbox",
+        piSeatbeltExtension: "../pi-seatbelt-sandbox",
+      }).ok,
+    ).toBe(false);
+    expect(
+      decodeConfig({
+        permissionMode: "pi-seatbelt-sandbox",
+        piSeatbeltExtension: "/trusted/pi-seatbelt-sandbox",
+      }).ok,
+    ).toBe(true);
   });
 
   it("throws a structured error when createConfig receives invalid runtime input", () => {

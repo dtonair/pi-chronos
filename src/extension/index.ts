@@ -5,7 +5,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { SchedulerToolInputSchema } from "../api/schemas.js";
-import { chronosDataDir, chronosDbPath } from "../config/paths.js";
+import { loadGlobalConfig } from "../config/load.js";
+import { chronosConfigPath, chronosDataDir, chronosDbPath } from "../config/paths.js";
 import { ChronosError, ChronosErrorCode } from "../domain/errors.js";
 import { createApprovalDiffView } from "../ui/approval-dialog.js";
 import {
@@ -268,8 +269,10 @@ export default function chronosExtension(pi: ExtensionAPI): void {
     let candidate: ChronosRuntime | undefined;
     try {
       const dataDir = chronosDataDir(getAgentDir());
+      const config = loadGlobalConfig(chronosConfigPath(dataDir));
       candidate = createChronosRuntime({
         databasePath: chronosDbPath(dataDir),
+        config,
         migrationSql: loadMigrationSql(),
         configDirName: CONFIG_DIR_NAME,
         model: ctx.model === undefined ? undefined : `${ctx.model.provider}/${ctx.model.id}`,

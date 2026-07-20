@@ -61,6 +61,21 @@ describe("trusted runner guard", () => {
     for (const call of calls) expect((await guard.authorize(call)).ok).toBe(true);
   });
 
+  it("delegates tool, shell, and filesystem authorization to pi-seatbelt", async () => {
+    const guard = createRunnerGuard(manifest, "/tmp/job", undefined, undefined, {
+      profilePath: "/tmp/seatbelt.sb",
+      sandboxRequired: true,
+      delegateToPiSeatbelt: true,
+    });
+    expect(guard.sessionStart(2_000).ok).toBe(true);
+    expect((await guard.authorize({ tool: "read", input: { path: "/outside/job" } })).ok).toBe(
+      true,
+    );
+    expect((await guard.authorize({ tool: "bash", input: { command: "anything" } })).ok).toBe(true);
+    expect((await guard.authorize({ tool: "extension_tool", input: {} })).ok).toBe(true);
+    expect((await guard.authorize({ tool: "scheduler", input: {} })).ok).toBe(false);
+  });
+
   it("authorizes declared paths and rejects unknown tools and escapes", async () => {
     const guard = createRunnerGuard(manifest, "/tmp/job");
     expect(guard.sessionStart(2_000).ok).toBe(true);

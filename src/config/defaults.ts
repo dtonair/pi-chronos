@@ -1,3 +1,5 @@
+export type PermissionMode = "job" | "pi-seatbelt-sandbox";
+
 export interface ChronosConfig {
   defaultTimezone: string;
   minimumIntervalMs: number;
@@ -16,6 +18,8 @@ export interface ChronosConfig {
   enableOsSandbox: boolean;
   maximumImportBytes: number;
   maximumImportJobs: number;
+  permissionMode: PermissionMode;
+  piSeatbeltExtension?: string;
 }
 
 export const DEFAULT_CONFIG: ChronosConfig = {
@@ -36,4 +40,5 @@ export const DEFAULT_CONFIG: ChronosConfig = {
   enableOsSandbox: false,
   maximumImportBytes: 1_048_576,
   maximumImportJobs: 1_000,
+  permissionMode: "job",
 };

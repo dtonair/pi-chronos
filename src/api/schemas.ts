@@ -724,10 +724,15 @@ function permissionSemanticError(
       entity: unsupportedTool,
     });
   }
-  if (permissions.extensions.allowedIds.length > 0) {
+  const extensionIds = permissions.extensions.allowedIds;
+  if (
+    extensionIds.some(
+      (id, index) => id.trim() !== id || /[\0\r\n]/.test(id) || extensionIds.indexOf(id) !== index,
+    )
+  ) {
     return new ChronosError({
-      code: ChronosErrorCode.UNSUPPORTED_OPERATION,
-      message: "Third-party extensions are not supported for scheduled jobs in version 1",
+      code: ChronosErrorCode.VALIDATION_ERROR,
+      message: "Extension sources must be trimmed, single-line, and unique",
     });
   }
   if (!permissions.shell.allowed && permissions.shell.commands.length > 0) {

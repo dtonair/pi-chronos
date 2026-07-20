@@ -20,7 +20,7 @@ export {
   SchedulerToolInputSchema,
 } from "./api/schemas.js";
 export { createRunService } from "./application/run-service.js";
-export { type ChronosConfig, DEFAULT_CONFIG } from "./config/defaults.js";
+export { type ChronosConfig, DEFAULT_CONFIG, type PermissionMode } from "./config/defaults.js";
 export {
   type ChronosConfigOverrides,
   ChronosConfigOverridesSchema,

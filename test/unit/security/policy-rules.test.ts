@@ -59,6 +59,12 @@ describe("security policy rules", () => {
       validateEnvironment(environment({ values: { PATH: "x" } }), DEFAULT_PERMISSIONS).ok,
     ).toBe(false);
     expect(
+      validateEnvironment(
+        environment({ values: { CHRONOS_PERMISSION_MODE: "job" } }),
+        DEFAULT_PERMISSIONS,
+      ).ok,
+    ).toBe(false);
+    expect(
       validateEnvironment(environment({ secretNames: ["TOKEN"] }), {
         ...DEFAULT_PERMISSIONS,
         secrets: { allowedNames: ["TOKEN"] },

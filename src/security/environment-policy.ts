@@ -14,6 +14,9 @@ const RESERVED_ENV_NAMES = new Set([
   "DYLD_INSERT_LIBRARIES",
   "BASH_ENV",
   "ENV",
+  "PI_CODING_AGENT_DIR",
+  "PI_SEATBELT_PROFILE",
+  "PI_SEATBELT_PROFILE_SCOPE",
 ]);
 
 export function validateEnvironment(
@@ -30,7 +33,7 @@ export function validateEnvironment(
         }),
       );
     }
-    if (RESERVED_ENV_NAMES.has(name)) {
+    if (RESERVED_ENV_NAMES.has(name) || name.startsWith("CHRONOS_")) {
       return err(
         new ChronosError({
           code: ChronosErrorCode.PERMISSION_DENIED,

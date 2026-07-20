@@ -12,6 +12,7 @@ export interface RunnerGuardOptions {
   sandboxRequired?: boolean;
   maxOutputBytes?: number;
   timeoutMs?: number;
+  delegateToPiSeatbelt?: boolean;
 }
 
 export function createRunnerGuard(
@@ -42,6 +43,9 @@ export function createRunnerGuard(
         }),
       );
     }
+    if (options.delegateToPiSeatbelt && call.tool !== "chronos_complete") {
+      return ok(undefined);
+    }
     return authorizeToolCall(call, {
       cwd,
       permissions: manifest.permissions,
@@ -65,6 +69,7 @@ export function createRunnerGuard(
     sandboxRequired: options.sandboxRequired,
     maxOutputBytes: options.maxOutputBytes,
     timeoutMs: options.timeoutMs,
+    delegateToPiSeatbelt: options.delegateToPiSeatbelt,
     authorize,
     tools,
     sessionShutdown,

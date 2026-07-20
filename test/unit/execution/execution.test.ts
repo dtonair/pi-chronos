@@ -56,6 +56,7 @@ describe("child execution adapters", () => {
     const invocation = buildPiInvocation({
       model: "provider/model",
       tools: ["read"],
+      extensions: ["npm:pi-seatbelt-sandbox", "/tmp/audit-extension.js"],
       guardExtension: "/tmp/guard.js",
     });
     expect(invocation.args).toEqual([
@@ -72,6 +73,10 @@ describe("child execution adapters", () => {
       "--tools",
       "read",
       "--no-extensions",
+      "--extension",
+      "npm:pi-seatbelt-sandbox",
+      "--extension",
+      "/tmp/audit-extension.js",
       "--extension",
       "/tmp/guard.js",
     ]);

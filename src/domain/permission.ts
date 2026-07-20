@@ -61,7 +61,7 @@ export interface JobPermissions {
     domains: string[];
   };
   extensions: {
-    /** Must remain empty in version 1. */
+    /** Explicit Pi extension sources loaded after disabling ambient discovery. */
     allowedIds: string[];
   };
   secrets: {

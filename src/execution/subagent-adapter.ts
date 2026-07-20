@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import type { PermissionMode } from "../config/defaults.js";
 import { ChronosError, ChronosErrorCode } from "../domain/errors.js";
 import type { Job, UTCTimestamp } from "../domain/job.js";
 import type { Run, RunOutput } from "../domain/run.js";
@@ -20,6 +21,7 @@ import { buildChildContext } from "./context-builder.js";
 import { JsonlParser } from "./jsonl-parser.js";
 import { reduceTerminalOutcome } from "./outcome.js";
 import { limitOutput } from "./output-limiter.js";
+import { CHRONOS_PERMISSION_MODE_ENV, delegatesToPiSeatbelt } from "./permission-mode.js";
 import { buildPiInvocation } from "./pi-invocation.js";
 import { spawnChild } from "./process-control.js";
 import { redactText } from "./redactor.js";
@@ -32,6 +34,8 @@ export interface SubagentOptions {
   manifestDirectory?: string;
   artifactDirectory?: string;
   sandbox?: SandboxAdapter;
+  permissionMode?: PermissionMode;
+  piSeatbeltExtension?: string;
 }
 
 export interface SubagentResult {
@@ -52,9 +56,17 @@ export async function executeSubagent(
     job.definition.permissions,
   );
   if (!environmentValidation.ok) return environmentValidation;
+  const delegated = delegatesToPiSeatbelt(options.permissionMode);
   const invocation = buildPiInvocation({
     model: job.definition.model,
-    tools: job.definition.permissions.tools,
+    tools: delegated
+      ? ["read", "grep", "find", "ls", "edit", "write", "bash", "chronos_complete"]
+      : job.definition.permissions.tools,
+    extensions: delegated
+      ? options.piSeatbeltExtension
+        ? [options.piSeatbeltExtension]
+        : []
+      : job.definition.permissions.extensions.allowedIds,
     guardExtension: options.guardExtension,
   });
   // The child Pi stays on the host so it can resolve provider auth and its
@@ -62,7 +74,7 @@ export async function executeSubagent(
   const executable = invocation.executable;
   const args = invocation.args;
   let sandboxHandle: SandboxHandle | undefined;
-  if (job.definition.execution.sandboxRequired) {
+  if (job.definition.execution.sandboxRequired && !delegated) {
     if (options.sandbox === undefined) {
       return err(
         new ChronosError({
@@ -128,6 +140,7 @@ export async function executeSubagent(
   const secretValues: string[] = [];
   environment.CHRONOS_MAX_OUTPUT_BYTES = String(job.definition.execution.maxOutputBytes);
   environment.CHRONOS_TIMEOUT_MS = String(job.definition.execution.timeoutMs);
+  environment[CHRONOS_PERMISSION_MODE_ENV] = options.permissionMode ?? "job";
   if (manifest?.ok) {
     environment.CHRONOS_POLICY_MANIFEST = manifest.value.path;
     environment.CHRONOS_RUN_ID = run.id;
@@ -245,14 +258,19 @@ export async function executeSubagent(
     completion.mode === "explicit"
       ? await Promise.all(
           completion.requiredOutputs.map(async (output) => {
-            const allowed = await checkPathAllowed(
-              output.path,
-              job.definition.execution.workingDirectory,
-              "write",
-              job.definition.permissions,
-            );
-            if (!allowed.ok) return false;
-            const target = allowed.value;
+            let target: string;
+            if (delegated) {
+              target = resolve(job.definition.execution.workingDirectory, output.path);
+            } else {
+              const allowed = await checkPathAllowed(
+                output.path,
+                job.definition.execution.workingDirectory,
+                "write",
+                job.definition.permissions,
+              );
+              if (!allowed.ok) return false;
+              target = allowed.value;
+            }
             const present = existsSync(target);
             return output.mutation === "atomic_replace"
               ? present &&

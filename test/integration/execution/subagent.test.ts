@@ -26,9 +26,10 @@ describe("ephemeral child Pi execution", () => {
     directories.push(directory);
     const fakePi = join(directory, "pi");
     const stdinCapture = join(directory, "stdin.json");
+    const argvCapture = join(directory, "argv.txt");
     await writeFile(
       fakePi,
-      '#!/bin/sh\ncat > "$CHRONOS_STDIN_CAPTURE"\nprintf \'%s\\n\' \'{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"secret hello"}}\' \'{"type":"tool_execution_start","toolName":"read"}\' \'{"type":"message_end","message":{"usage":{"inputTokens":2,"outputTokens":3},"stopReason":"end"}}\'\n',
+      '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$TEST_ARGV_CAPTURE"\ncat > "$TEST_STDIN_CAPTURE"\nprintf \'%s\\n\' \'{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"secret hello"}}\' \'{"type":"tool_execution_start","toolName":"read"}\' \'{"type":"message_end","message":{"usage":{"inputTokens":2,"outputTokens":3},"stopReason":"end"}}\'\n',
       { mode: 0o700 },
     );
     await chmod(fakePi, 0o700);
@@ -39,7 +40,11 @@ describe("ephemeral child Pi execution", () => {
         timeoutMs: 2_000,
         maxOutputBytes: 4_096,
         environment: {
-          values: { SECRET_VALUE: "secret", CHRONOS_STDIN_CAPTURE: stdinCapture },
+          values: {
+            SECRET_VALUE: "secret",
+            TEST_STDIN_CAPTURE: stdinCapture,
+            TEST_ARGV_CAPTURE: argvCapture,
+          },
           secretNames: [],
         },
       });
@@ -49,6 +54,8 @@ describe("ephemeral child Pi execution", () => {
         ownerId: "instance-exec",
         manifestDirectory: join(directory, "manifests"),
         artifactDirectory: join(directory, "artifacts"),
+        permissionMode: "pi-seatbelt-sandbox",
+        piSeatbeltExtension: "/trusted/pi-seatbelt-sandbox",
       });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
@@ -62,6 +69,9 @@ describe("ephemeral child Pi execution", () => {
       };
       expect(childContext.prompt).toBe(job.definition.prompt);
       expect(childContext.chronos.runId).toBe(run.id);
+      const argv = (await readFile(argvCapture, "utf8")).trim().split("\n");
+      expect(argv).toContain("read,grep,find,ls,edit,write,bash,chronos_complete");
+      expect(argv).toContain("/trusted/pi-seatbelt-sandbox");
       expect(result.value.output?.artifactPath).toBeDefined();
       const artifactPath = result.value.output?.artifactPath ?? "";
       const artifact = await readFile(artifactPath, "utf8");

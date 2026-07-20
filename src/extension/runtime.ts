@@ -5,6 +5,7 @@ import { createApprovalService } from "../application/approval-service.js";
 import { importProjectJobs } from "../application/import-service.js";
 import { createJobService } from "../application/job-service.js";
 import { createRunService } from "../application/run-service.js";
+import type { ChronosConfig } from "../config/defaults.js";
 import type { AuditEventType } from "../domain/audit.js";
 import { createExecutor } from "../execution/executor.js";
 import { persistAudit } from "../observability/audit.js";
@@ -57,6 +58,7 @@ export interface ChronosRuntimeOptions {
   migrationSql: readonly string[];
   model?: string;
   configDirName?: string;
+  config?: ChronosConfig;
 }
 
 export function createChronosRuntime(options: ChronosRuntimeOptions) {
@@ -201,6 +203,8 @@ export function createChronosRuntime(options: ChronosRuntimeOptions) {
   const instanceId = ids.generate();
   const executor = createExecutor({
     sandbox,
+    permissionMode: options.config?.permissionMode,
+    piSeatbeltExtension: options.config?.piSeatbeltExtension,
     guardExtension: fileURLToPath(new URL("../execution/guard-extension.js", import.meta.url)),
     ownerId: instanceId,
     manifestDirectory: join(dirname(options.databasePath), "manifests"),
@@ -217,7 +221,11 @@ export function createChronosRuntime(options: ChronosRuntimeOptions) {
     instanceId,
     events,
     logger,
-    pump: { execute: executor, concurrency: 4, leaseMs: 60_000 },
+    pump: {
+      execute: executor,
+      concurrency: options.config?.maximumConcurrentRuns ?? 4,
+      leaseMs: options.config?.leaseDurationMs ?? 60_000,
+    },
   });
   wakeEngine = engine.wake;
   requestCancel = (runId) => engine.pump?.cancel(runId) ?? false;

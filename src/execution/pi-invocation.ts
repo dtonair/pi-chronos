@@ -4,6 +4,7 @@ import { basename, delimiter, join } from "node:path";
 export interface InvocationConfig {
   model: string;
   tools: readonly string[];
+  extensions: readonly string[];
   guardExtension: string;
 }
 
@@ -55,6 +56,9 @@ export function buildPiInvocation(config: InvocationConfig): PiInvocation {
       "--tools",
       config.tools.join(","),
       "--no-extensions",
+      ...config.extensions.flatMap((extension) => ["--extension", extension]),
+      // Load the trusted guard last so it sees final tool-call inputs and its
+      // guarded built-in overrides cannot be replaced by approved extensions.
       "--extension",
       config.guardExtension,
     ],

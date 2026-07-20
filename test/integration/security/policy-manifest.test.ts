@@ -8,12 +8,15 @@ import { PolicyManifestStore } from "../../../src/security/policy-manifest.js";
 
 const time = (value: number): UTCTimestamp => value as UTCTimestamp;
 
-const permissions = (readPaths = ["/tmp/chronos"]): EffectivePermissions => ({
+const permissions = (
+  readPaths = ["/tmp/chronos"],
+  extensionIds: string[] = [],
+): EffectivePermissions => ({
   tools: ["read"],
   shell: { allowed: false, commands: [] },
   filesystem: { readPaths, writePaths: ["/tmp/chronos"] },
   network: { allowed: false, domains: [] },
-  extensions: { allowedIds: [] },
+  extensions: { allowedIds: extensionIds },
   secrets: { allowedNames: [] },
   canonicalReadPaths: readPaths,
   canonicalWritePaths: ["/tmp/chronos"],
@@ -35,7 +38,7 @@ describe("policy manifests", () => {
         jobId: "job-1",
         ownerId: "owner-1",
         fingerprint: "a".repeat(64),
-        permissions: permissions(),
+        permissions: permissions(["/tmp/chronos"], ["npm:pi-seatbelt-sandbox"]),
       },
       time(1_000),
       1_000,
@@ -51,6 +54,9 @@ describe("policy manifests", () => {
     };
     const consumed = await store.readAndConsume(created.value.path, expected, time(1_500));
     expect(consumed.ok).toBe(true);
+    if (consumed.ok) {
+      expect(consumed.value.permissions.extensions.allowedIds).toEqual(["npm:pi-seatbelt-sandbox"]);
+    }
     const freshStoreReplay = await new PolicyManifestStore(directory).readAndConsume(
       created.value.path,
       expected,
