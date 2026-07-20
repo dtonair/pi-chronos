@@ -8,6 +8,26 @@ describe("trusted child guard extension", () => {
     delete process.env.CHRONOS_JOB_ID;
     delete process.env.CHRONOS_OWNER_ID;
     delete process.env.CHRONOS_FINGERPRINT;
+    delete process.env.CHRONOS_SEATBELT_PROFILE;
+    delete process.env.CHRONOS_SANDBOX_REQUIRED;
+  });
+
+  it("captures and removes the internal sandbox profile before tools run", async () => {
+    process.env.CHRONOS_SEATBELT_PROFILE = "/tmp/run.sb";
+    process.env.CHRONOS_SANDBOX_REQUIRED = "1";
+    const handlers = new Map<string, (...args: unknown[]) => unknown>();
+    const pi = {
+      on(event: string, handler: (...args: unknown[]) => unknown) {
+        handlers.set(event, handler);
+      },
+      getActiveTools: () => ["scheduler", "read"],
+      setActiveTools: () => undefined,
+    };
+    runnerGuardExtension(pi as never);
+    await handlers.get("session_start")?.({}, {});
+    expect(process.env.CHRONOS_SEATBELT_PROFILE).toBeUndefined();
+    expect(process.env.CHRONOS_SANDBOX_REQUIRED).toBeUndefined();
+    await handlers.get("session_shutdown")?.();
   });
 
   it("removes scheduler and blocks tools when the manifest is unavailable", async () => {

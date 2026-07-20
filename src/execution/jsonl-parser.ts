@@ -6,6 +6,12 @@ export interface ParsedChildOutput {
   inputTokens: number;
   outputTokens: number;
   stopReason?: string;
+  /** Safe completion protocol evidence parsed from trusted tool events. */
+  completion?: { status: "succeeded" | "failed"; summary: string };
+  completionDeclarations: number;
+  atomicWrites: string[];
+  toolErrorCount: number;
+  protocolFailure: boolean;
   malformedLines: number;
   diagnostics: string[];
 }
@@ -23,12 +29,17 @@ export class JsonlParser {
     toolActivity: [],
     inputTokens: 0,
     outputTokens: 0,
+    completionDeclarations: 0,
+    atomicWrites: [],
+    toolErrorCount: 0,
+    protocolFailure: false,
     malformedLines: 0,
     diagnostics: [],
   };
   private readonly maxDiagnostics: number;
   private readonly maxTextBytes: number;
   private readonly maxLineBytes: number;
+  private readonly activeToolCalls = new Map<string, string>();
 
   constructor(
     maxDiagnostics = 20,
@@ -67,6 +78,7 @@ export class JsonlParser {
       ...this.result,
       toolActivity: [...this.result.toolActivity],
       diagnostics: [...this.result.diagnostics],
+      atomicWrites: [...this.result.atomicWrites],
     };
   }
 
@@ -117,6 +129,23 @@ export class JsonlParser {
       const name = value.name ?? value.tool_name ?? value.toolName ?? tool?.name;
       if (typeof name === "string" && this.result.toolActivity.length < 1_000)
         this.result.toolActivity.push(name);
+      if (type === "tool_execution_start") {
+        const id = value.toolCallId ?? value.tool_call_id ?? value.id;
+        if (typeof id === "string" && this.activeToolCalls.size < 1_000 && typeof name === "string")
+          this.activeToolCalls.set(id, name);
+      }
+      if (type === "tool_execution_end") {
+        const id = value.toolCallId ?? value.tool_call_id ?? value.id;
+        if (typeof id === "string") {
+          if (!this.activeToolCalls.has(id)) this.result.protocolFailure = true;
+          this.activeToolCalls.delete(id);
+        }
+        this.parseToolEnd(name, value);
+        if (name === "chronos_complete") this.parseCompletion(value);
+        if (name === "chronos_atomic_write") this.parseAtomicWrite(value);
+      }
+      // Completion and mutation evidence is accepted only from the bounded
+      // execution-end result, not from a request that may never execute.
     }
     const usage = value.usage ?? message?.usage;
     if (usage && typeof usage === "object" && !Array.isArray(usage)) {
@@ -128,6 +157,66 @@ export class JsonlParser {
     }
     const stopReason = value.stop_reason ?? value.stopReason ?? message?.stopReason;
     if (typeof stopReason === "string") this.result.stopReason = stopReason;
+  }
+
+  private parseCompletion(value: JsonValue): void {
+    const args = (value.args ??
+      value.input ??
+      value.parameters ??
+      (value.toolCall as JsonValue | undefined)?.args) as JsonValue | undefined;
+    const result = value.result as JsonValue | undefined;
+    const details = result?.details as JsonValue | undefined;
+    const status = args?.status ?? result?.status ?? details?.status;
+    const summary = args?.summary ?? result?.summary ?? details?.summary;
+    this.result.completionDeclarations++;
+    if (
+      (status !== "succeeded" && status !== "failed") ||
+      typeof summary !== "string" ||
+      summary.length === 0 ||
+      Buffer.byteLength(summary) > 4_096 ||
+      this.result.completionDeclarations > 1
+    ) {
+      this.result.protocolFailure = true;
+      this.addDiagnostic("Invalid completion declaration");
+      return;
+    }
+    this.result.completion = { status, summary };
+  }
+
+  private parseAtomicWrite(value: JsonValue): void {
+    const result = value.result as JsonValue | undefined;
+    const details = result?.details as JsonValue | undefined;
+    const path =
+      result?.path ??
+      details?.path ??
+      (value.path as unknown) ??
+      ((value.args as JsonValue | undefined)?.path as unknown);
+    const success = result?.success ?? details?.success ?? value.success;
+    if (
+      success === true &&
+      typeof path === "string" &&
+      path.length <= 4_096 &&
+      this.result.atomicWrites.length < 100
+    )
+      this.result.atomicWrites.push(path);
+  }
+
+  private parseToolEnd(name: unknown, value: JsonValue): void {
+    const result = value.result as JsonValue | undefined;
+    if (
+      value.isError === true ||
+      value.error !== undefined ||
+      result?.isError === true ||
+      result?.status === "error"
+    ) {
+      this.result.toolErrorCount++;
+    }
+    if (name === "chronos_complete" && value.error !== undefined)
+      this.result.protocolFailure = true;
+  }
+
+  private addDiagnostic(message: string): void {
+    if (this.result.diagnostics.length < this.maxDiagnostics) this.result.diagnostics.push(message);
   }
 
   private appendAssistantText(text: string): void {

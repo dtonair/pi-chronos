@@ -186,7 +186,7 @@ export function createChronosRuntime(options: ChronosRuntimeOptions) {
             },
       enforcement: {
         toolAndPathPolicy: "active",
-        osSandbox: sandbox.supported ? "active" : "unavailable",
+        osSandbox: sandbox.status ?? (sandbox.supported ? "active-tool-subprocess" : "unavailable"),
       },
     }),
     onMutation: () => wakeEngine?.(),

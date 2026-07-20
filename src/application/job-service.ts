@@ -14,6 +14,7 @@
 import type { AuditEvent } from "../domain/audit.js";
 import { ChronosError, ChronosErrorCode } from "../domain/errors.js";
 import type { Job, JobDefinition, JobSchedule, JobStatus } from "../domain/job.js";
+import type { JobPermissions } from "../domain/permission.js";
 import { createCronCalculator } from "../scheduler/cron.js";
 import { normalizeOnce } from "../scheduler/once.js";
 import { isValidTransition, resolveInitialStatus } from "../security/approval-policy.js";
@@ -33,7 +34,7 @@ import {
   updateJob,
 } from "../storage/repositories/job-repository.js";
 import { inImmediateTransaction } from "../storage/transaction.js";
-import { validateEffectivePermissions } from "./preview-service.js";
+import { validateCompletionPolicy, validateEffectivePermissions } from "./preview-service.js";
 
 // ─── Job service interface ────────────────────────────
 
@@ -142,25 +143,24 @@ export function createJobService(deps: JobServiceDeps) {
         overlapPolicy: params.definition.execution?.overlapPolicy ?? "skip",
         missedRunPolicy: params.definition.execution?.missedRunPolicy ?? "skip",
         sandboxRequired: params.definition.execution?.sandboxRequired ?? false,
+        completion: params.definition.execution?.completion ?? {
+          mode: "explicit",
+          requiredOutputs: [],
+        },
         environment: params.definition.execution?.environment ?? {
           values: {},
           secretNames: [],
         },
       },
-      permissions: params.definition.permissions ?? {
-        tools: ["read", "grep", "find", "ls"],
-        shell: { allowed: false, commands: [] },
-        filesystem: { readPaths: [], writePaths: [] },
-        network: { allowed: false, domains: [] },
-        extensions: { allowedIds: [] },
-        secrets: { allowedNames: [] },
-      },
+      permissions: normalizePermissions(params.definition.permissions),
       source: params.definition.source ?? "direct_user",
       importKey: params.definition.importKey,
     };
 
     const permissions = validateEffectivePermissions(definition.permissions);
     if (!permissions.ok) return err(permissions.error);
+    const completion = validateCompletionPolicy(definition.execution.completion);
+    if (!completion.ok) return err(completion.error);
     const environment = validateEnvironment(
       definition.execution.environment,
       definition.permissions,
@@ -306,9 +306,12 @@ export function createJobService(deps: JobServiceDeps) {
             : updatedDefinition.execution.environment,
         };
       }
-      if (patch.permissions !== undefined) updatedDefinition.permissions = patch.permissions;
+      if (patch.permissions !== undefined)
+        updatedDefinition.permissions = normalizePermissions(patch.permissions);
       const permissions = validateEffectivePermissions(updatedDefinition.permissions);
       if (!permissions.ok) return err(permissions.error);
+      const completion = validateCompletionPolicy(updatedDefinition.execution.completion);
+      if (!completion.ok) return err(completion.error);
       const environment = validateEnvironment(
         updatedDefinition.execution.environment,
         updatedDefinition.permissions,
@@ -507,6 +510,18 @@ export function createJobService(deps: JobServiceDeps) {
 }
 
 // ─── Helpers ──────────────────────────────────────────
+
+function normalizePermissions(permissions: Partial<JobPermissions> | undefined): JobPermissions {
+  return {
+    tools: permissions?.tools ?? ["read", "grep", "find", "ls"],
+    shell: permissions?.shell ?? { allowed: false, commands: [] },
+    filesystem: permissions?.filesystem ?? { readPaths: [], writePaths: [] },
+    network: permissions?.network ?? { allowed: false, domains: [] },
+    extensions: permissions?.extensions ?? { allowedIds: [] },
+    secrets: permissions?.secrets ?? { allowedNames: [] },
+    process: permissions?.process ?? { allowed: false, commands: [] },
+  };
+}
 
 function normalizeSchedule(
   schedule: JobSchedule,

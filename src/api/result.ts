@@ -127,7 +127,7 @@ export interface SchedulerHealth {
   lastObservabilityError?: { message: string; timestamp: string };
   enforcement: {
     toolAndPathPolicy: "active" | "inactive";
-    osSandbox: "active" | "unavailable" | "disabled";
+    osSandbox: "active-tool-subprocess" | "unavailable" | "disabled";
   };
 }
 

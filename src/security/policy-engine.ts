@@ -4,6 +4,7 @@ import type { EventSink, PathCanonicalizer } from "../shared/ports.js";
 import type { Result } from "../shared/result.js";
 import { err, ok } from "../shared/result.js";
 import { checkPathAllowed } from "./path-policy.js";
+import { authorizeStructuredProcess } from "./process-policy.js";
 import { checkShellCommand } from "./shell-policy.js";
 
 export const SUPPORTED_GUARD_TOOLS = [
@@ -14,6 +15,9 @@ export const SUPPORTED_GUARD_TOOLS = [
   "edit",
   "write",
   "bash",
+  "chronos_exec",
+  "chronos_atomic_write",
+  "chronos_complete",
 ] as const;
 export type GuardTool = (typeof SUPPORTED_GUARD_TOOLS)[number];
 
@@ -27,6 +31,9 @@ export interface PolicyEngineOptions {
   permissions: JobPermissions;
   canonicalizer?: PathCanonicalizer;
   events?: EventSink;
+  /** Captured run-specific profile, never read from PI_SEATBELT_PROFILE. */
+  sandboxProfilePath?: string;
+  sandboxRequired?: boolean;
 }
 
 /** Enforce the persisted policy at each child tool call. */
@@ -60,7 +67,7 @@ async function authorizeToolCallInternal(
       }),
     );
   }
-  if (!options.permissions.tools.includes(call.tool)) {
+  if (call.tool !== "chronos_complete" && !options.permissions.tools.includes(call.tool)) {
     return err(
       new ChronosError({
         code: ChronosErrorCode.PERMISSION_DENIED,
@@ -69,7 +76,47 @@ async function authorizeToolCallInternal(
       }),
     );
   }
+  if (call.tool === "chronos_complete") {
+    if (
+      (call.input.status !== "succeeded" && call.input.status !== "failed") ||
+      typeof call.input.summary !== "string" ||
+      call.input.summary.length === 0 ||
+      Buffer.byteLength(call.input.summary) > 4_096
+    ) {
+      return err(
+        new ChronosError({
+          code: ChronosErrorCode.PERMISSION_DENIED,
+          message: "Invalid completion declaration",
+        }),
+      );
+    }
+    return ok(undefined);
+  }
+  if (call.tool === "chronos_exec") {
+    if (options.sandboxRequired && options.sandboxProfilePath === undefined) {
+      return err(
+        new ChronosError({
+          code: ChronosErrorCode.SANDBOX_UNAVAILABLE,
+          message: "Sandbox profile is unavailable",
+        }),
+      );
+    }
+    const authorizedProcess = authorizeStructuredProcess(
+      { executable: call.input.executable, args: call.input.args },
+      options.permissions.process,
+      globalThis.process.env.PATH ?? "",
+    );
+    return authorizedProcess.ok ? ok(undefined) : authorizedProcess;
+  }
   if (call.tool === "bash") {
+    if (options.sandboxRequired && options.sandboxProfilePath === undefined) {
+      return err(
+        new ChronosError({
+          code: ChronosErrorCode.SANDBOX_UNAVAILABLE,
+          message: "Sandbox profile is unavailable",
+        }),
+      );
+    }
     const command = call.input.command;
     if (typeof command !== "string")
       return err(

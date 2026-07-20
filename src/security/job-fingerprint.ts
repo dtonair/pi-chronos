@@ -4,8 +4,8 @@
  * Security-relevant fields (FR61): any change to these invalidates approval.
  *   - name, prompt, schedule, model
  *   - execution: mode, workingDirectory, timeoutMs, maxOutputBytes,
- *                overlapPolicy, missedRunPolicy, sandboxRequired, environment
- *   - permissions (all fields)
+ *                overlapPolicy, missedRunPolicy, sandboxRequired, completion, environment
+ *   - permissions (all fields, including structured process rules)
  *   - source
  *
  * Display-only fields (do not affect fingerprint):
@@ -37,6 +37,7 @@ export interface FingerprintTarget {
     overlapPolicy: string;
     missedRunPolicy: string;
     sandboxRequired: boolean;
+    completion: JobExecution["completion"];
     environment: EnvironmentFingerprint;
   };
   permissions: PermissionsFingerprint;
@@ -55,6 +56,7 @@ interface PermissionsFingerprint {
   network: { allowed: boolean; domains: string[] };
   extensions: { allowedIds: string[] };
   secrets: { allowedNames: string[] };
+  process: NonNullable<JobPermissions["process"]>;
 }
 
 /**
@@ -81,6 +83,9 @@ function executionToTarget(exec: JobExecution): FingerprintTarget["execution"] {
     overlapPolicy: exec.overlapPolicy,
     missedRunPolicy: exec.missedRunPolicy,
     sandboxRequired: exec.sandboxRequired,
+    // An omitted completion field is an input-side new-job default. Legacy
+    // decoded rows carry an explicit process_exit value before fingerprinting.
+    completion: exec.completion ?? { mode: "explicit", requiredOutputs: [] },
     environment: environmentToTarget(exec.environment),
   };
 }
@@ -112,6 +117,13 @@ function permissionsToTarget(perms: JobPermissions): PermissionsFingerprint {
     },
     secrets: {
       allowedNames: [...perms.secrets.allowedNames],
+    },
+    process: {
+      allowed: perms.process?.allowed ?? false,
+      commands: (perms.process?.commands ?? []).map((command) => ({
+        executable: command.executable,
+        args: command.args.map((arg) => ({ ...arg })),
+      })),
     },
   };
 }

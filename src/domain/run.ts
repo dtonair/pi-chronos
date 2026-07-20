@@ -62,6 +62,10 @@ export interface RunOutput {
   toolActivity?: string[];
   /** Usage stats from the child if available. */
   usage?: ChildUsage;
+  /** Sanitized explicit-completion evidence and aggregate tool diagnostics. */
+  completionSummary?: string;
+  completionCategory?: string;
+  toolErrorCount?: number;
 }
 
 export interface ChildUsage {
@@ -91,6 +95,8 @@ export interface Run extends RunIdentity {
   leaseDeadline?: UTCTimestamp;
   /** Output accumulated from the child process. */
   output?: RunOutput;
+  /** Sanitized terminal failure category or skip reason. */
+  failureCode?: string;
   /** Skip reason when status is skipped. */
   skipReason?: SkipReason;
   /** For catch-up runs: the first missed occurrence. */

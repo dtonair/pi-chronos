@@ -18,8 +18,53 @@ const time = 1_700_000_000_000 as never;
 
 describe("storage row codecs", () => {
   it("round-trips jobs and rejects malformed embedded records", () => {
-    const row = encodeJobRow(createTestJob({ id: "codec-job" }));
+    const rich = createTestJob({ id: "codec-job" });
+    rich.definition.permissions = {
+      ...rich.definition.permissions,
+      process: {
+        allowed: true,
+        commands: [
+          {
+            executable: "fake-cli",
+            args: [
+              { kind: "literal", value: "list" },
+              { kind: "slot", name: "id", valueType: "uuid" },
+            ],
+          },
+        ],
+      },
+    };
+    rich.definition.execution.completion = {
+      mode: "explicit",
+      requiredOutputs: [{ path: "report.md", mutation: "atomic_replace" }],
+    };
+    const row = encodeJobRow(rich);
     expect(decodeJobRow(row).ok).toBe(true);
+    const legacyPermissions = JSON.parse(row.permissions_json) as {
+      value: Record<string, unknown>;
+    };
+    delete legacyPermissions.value.process;
+    const legacyExecution = JSON.parse(row.execution_json) as Record<string, unknown>;
+    delete legacyExecution.completion;
+    const legacy = decodeJobRow({
+      ...row,
+      permissions_json: JSON.stringify(legacyPermissions),
+      execution_json: JSON.stringify(legacyExecution),
+    });
+    expect(legacy.ok).toBe(true);
+    if (legacy.ok) {
+      expect(legacy.value.definition.permissions.process?.allowed).toBe(false);
+      expect(legacy.value.definition.execution.completion).toEqual({ mode: "process_exit" });
+    }
+    expect(
+      !decodeJobRow({
+        ...row,
+        permissions_json: JSON.stringify({
+          schemaVersion: 1,
+          value: { ...JSON.parse(row.permissions_json).value, unknown: true },
+        }),
+      }).ok,
+    ).toBe(true);
     expect(!decodeJobRow({ ...row, created_at: "bad" }).ok).toBe(true);
     expect(!decodeJobRow({ ...row, tags_json: "{}" }).ok).toBe(true);
     expect(
@@ -41,6 +86,9 @@ describe("storage row codecs", () => {
         totalBytes: 12,
         stopReason: "done",
         toolActivity: ["read"],
+        completionSummary: "completed",
+        completionCategory: "command_failure",
+        toolErrorCount: 1,
       },
       catchUpFirst: time,
       catchUpLast: (time + 1_000) as never,
@@ -51,6 +99,9 @@ describe("storage row codecs", () => {
     expect(decoded.ok).toBe(true);
     if (decoded.ok) {
       expect(decoded.value.output?.toolActivity).toEqual(["read"]);
+      expect(decoded.value.output?.completionSummary).toBe("completed");
+      expect(decoded.value.output?.completionCategory).toBe("command_failure");
+      expect(decoded.value.output?.toolErrorCount).toBe(1);
       expect(decoded.value.catchUpCount).toBe(2);
     }
     expect(!decodeRunRow({ ...row, queued_at: "bad" }).ok).toBe(true);

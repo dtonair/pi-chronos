@@ -19,6 +19,9 @@ const SUPPORTED_TOOLS: ReadonlySet<string> = new Set<GuardSupportedTool>([
   "edit",
   "write",
   "bash",
+  "chronos_exec",
+  "chronos_atomic_write",
+  "chronos_complete",
 ]);
 
 export const OnceScheduleSchema = Type.Object(
@@ -77,9 +80,60 @@ export const RunStatusSchema = StringEnum([
   "abandoned",
 ] as const);
 
+export const ProcessArgumentRuleSchema = Type.Union([
+  Type.Object(
+    { kind: Type.Literal("literal"), value: Type.String({ minLength: 1, maxLength: 4_096 }) },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      kind: Type.Literal("slot"),
+      name: Type.String({ minLength: 1, maxLength: 64 }),
+      valueType: StringEnum(["uuid", "integer", "slug"] as const),
+    },
+    { additionalProperties: false },
+  ),
+]);
+
+export const ProcessCommandRuleSchema = Type.Object(
+  {
+    executable: Type.String({ minLength: 1, maxLength: 4_096 }),
+    args: Type.Array(ProcessArgumentRuleSchema, { maxItems: 32 }),
+  },
+  { additionalProperties: false },
+);
+
+export const ProcessPermissionsSchema = Type.Object(
+  {
+    allowed: Type.Boolean(),
+    commands: Type.Array(ProcessCommandRuleSchema, { maxItems: 50 }),
+  },
+  { additionalProperties: false },
+);
+
+export const CompletionPolicySchema = Type.Union([
+  Type.Object({ mode: Type.Literal("process_exit") }, { additionalProperties: false }),
+  Type.Object(
+    {
+      mode: Type.Literal("explicit"),
+      requiredOutputs: Type.Array(
+        Type.Object(
+          {
+            path: Type.String({ minLength: 1, maxLength: 4_096 }),
+            mutation: StringEnum(["atomic_replace", "exists"] as const),
+          },
+          { additionalProperties: false },
+        ),
+        { maxItems: 20 },
+      ),
+    },
+    { additionalProperties: false },
+  ),
+]);
+
 export const JobPermissionsSchema = Type.Object(
   {
-    tools: Type.Array(Type.String({ minLength: 1, maxLength: 64 }), { maxItems: 7 }),
+    tools: Type.Array(Type.String({ minLength: 1, maxLength: 64 }), { maxItems: 11 }),
     shell: Type.Object(
       {
         allowed: Type.Boolean(),
@@ -117,6 +171,7 @@ export const JobPermissionsSchema = Type.Object(
       },
       { additionalProperties: false },
     ),
+    process: Type.Optional(ProcessPermissionsSchema),
   },
   { additionalProperties: false },
 );
@@ -141,6 +196,7 @@ export const JobExecutionInputSchema = Type.Object(
     overlapPolicy: Type.Optional(StringEnum(["skip"] as const, { default: "skip" })),
     missedRunPolicy: Type.Optional(StringEnum(["skip", "run_once"] as const, { default: "skip" })),
     sandboxRequired: Type.Optional(Type.Boolean({ default: false })),
+    completion: Type.Optional(CompletionPolicySchema),
     environment: Type.Optional(JobEnvironmentSchema),
   },
   { additionalProperties: false },
@@ -311,7 +367,7 @@ export const SchedulerHealthSchema = Type.Object(
     enforcement: Type.Object(
       {
         toolAndPathPolicy: StringEnum(["active", "inactive"] as const),
-        osSandbox: StringEnum(["active", "unavailable", "disabled"] as const),
+        osSandbox: StringEnum(["active-tool-subprocess", "unavailable", "disabled"] as const),
       },
       { additionalProperties: false },
     ),
@@ -349,6 +405,51 @@ export const SchedulerResultSchema = Type.Object(
 
 const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
 
+export const PersistedJobPermissionsValueSchema = Type.Object(
+  {
+    tools: Type.Array(Type.String({ minLength: 1, maxLength: 64 }), { maxItems: 11 }),
+    shell: Type.Object(
+      {
+        allowed: Type.Boolean(),
+        commands: Type.Array(Type.String({ minLength: 1, maxLength: 8_192 }), { maxItems: 100 }),
+      },
+      { additionalProperties: false },
+    ),
+    filesystem: Type.Object(
+      {
+        readPaths: Type.Array(Type.String({ minLength: 1, maxLength: 4_096 }), { maxItems: 200 }),
+        writePaths: Type.Array(Type.String({ minLength: 1, maxLength: 4_096 }), {
+          maxItems: 200,
+        }),
+      },
+      { additionalProperties: false },
+    ),
+    network: Type.Object(
+      {
+        allowed: Type.Boolean(),
+        domains: Type.Array(Type.String({ minLength: 1, maxLength: 253 }), { maxItems: 200 }),
+      },
+      { additionalProperties: false },
+    ),
+    extensions: Type.Object(
+      {
+        allowedIds: Type.Array(Type.String({ minLength: 1, maxLength: 256 }), { maxItems: 50 }),
+      },
+      { additionalProperties: false },
+    ),
+    secrets: Type.Object(
+      {
+        allowedNames: Type.Array(Type.String({ minLength: 1, maxLength: 256 }), {
+          maxItems: 100,
+        }),
+      },
+      { additionalProperties: false },
+    ),
+    process: ProcessPermissionsSchema,
+  },
+  { additionalProperties: false },
+);
+
 /** Persisted JSON documents carry independent versions before being embedded in SQL text. */
 export const PersistedScheduleSchema = Type.Object(
   {
@@ -369,12 +470,13 @@ export const PersistedExecutionSchema = Type.Object(
     overlapPolicy: Type.Literal("skip"),
     missedRunPolicy: StringEnum(["skip", "run_once"] as const),
     sandboxRequired: Type.Boolean(),
+    completion: CompletionPolicySchema,
     environment: JobEnvironmentSchema,
   },
   { additionalProperties: false },
 );
 export const PersistedPermissionsSchema = Type.Object(
-  { schemaVersion: Type.Literal(1), value: JobPermissionsSchema },
+  { schemaVersion: Type.Literal(1), value: PersistedJobPermissionsValueSchema },
   { additionalProperties: false },
 );
 export const RunMetadataSchema = Type.Object(
@@ -387,6 +489,9 @@ export const RunMetadataSchema = Type.Object(
     stopReason: Type.Optional(Type.String()),
     outputTotalBytes: Type.Optional(Type.Integer({ minimum: 0 })),
     toolActivity: Type.Optional(Type.Array(Type.String(), { maxItems: 1_000 })),
+    completionSummary: Type.Optional(Type.String({ maxLength: 4_096 })),
+    completionCategory: Type.Optional(Type.String({ maxLength: 64 })),
+    toolErrorCount: Type.Optional(Type.Integer({ minimum: 0, maximum: 1_000 })),
   },
   { additionalProperties: false },
 );
@@ -584,6 +689,29 @@ function scheduleSemanticError(
   return undefined;
 }
 
+function completionSemanticError(
+  completion: Static<typeof CompletionPolicySchema> | undefined,
+): ChronosError | undefined {
+  if (completion === undefined || completion.mode === "process_exit") return undefined;
+  const seen = new Set<string>();
+  for (const output of completion.requiredOutputs) {
+    if (
+      output.path === "/" ||
+      output.path === "\\" ||
+      output.path === "." ||
+      /^[A-Za-z]:[\\\\/]*$/.test(output.path) ||
+      seen.has(output.path)
+    ) {
+      return new ChronosError({
+        code: ChronosErrorCode.VALIDATION_ERROR,
+        message: "Required output path is broad or duplicated",
+      });
+    }
+    seen.add(output.path);
+  }
+  return undefined;
+}
+
 function permissionSemanticError(
   permissions: Static<typeof JobPermissionsSchema> | undefined,
 ): ChronosError | undefined {
@@ -613,6 +741,34 @@ function permissionSemanticError(
       code: ChronosErrorCode.VALIDATION_ERROR,
       message: "network.domains must be empty when network.allowed is false",
     });
+  }
+  if (permissions.process !== undefined) {
+    if (!permissions.process.allowed && permissions.process.commands.length > 0) {
+      return new ChronosError({
+        code: ChronosErrorCode.VALIDATION_ERROR,
+        message: "process.commands must be empty when process.allowed is false",
+      });
+    }
+    for (const command of permissions.process.commands) {
+      const slots = new Set<string>();
+      if (command.executable.trim().length === 0) {
+        return new ChronosError({
+          code: ChronosErrorCode.VALIDATION_ERROR,
+          message: "Process executable cannot be empty",
+        });
+      }
+      for (const arg of command.args) {
+        if (arg.kind === "slot") {
+          if (slots.has(arg.name)) {
+            return new ChronosError({
+              code: ChronosErrorCode.VALIDATION_ERROR,
+              message: "Process slot names must be unique",
+            });
+          }
+          slots.add(arg.name);
+        }
+      }
+    }
   }
   return undefined;
 }
@@ -707,6 +863,10 @@ export function decodeSchedulerToolInput(
     input.action === SchedulerAction.UPDATE ? input.patch?.permissions : input.permissions;
   const semanticPermissionError = permissionSemanticError(permissions);
   if (semanticPermissionError !== undefined) return err(semanticPermissionError);
+  const execution =
+    input.action === SchedulerAction.UPDATE ? input.patch?.execution : input.execution;
+  const completionError = completionSemanticError(execution?.completion);
+  if (completionError !== undefined) return err(completionError);
   return ok(input);
 }
 
@@ -719,6 +879,8 @@ export function decodeImportFile(value: unknown, minimumIntervalMs = 60_000): Re
     if (scheduleError !== undefined) return err(scheduleError);
     const permissionError = permissionSemanticError(job.permissions);
     if (permissionError !== undefined) return err(permissionError);
+    const completionError = completionSemanticError(job.execution?.completion);
+    if (completionError !== undefined) return err(completionError);
     const environment = job.execution?.environment;
     if (
       environment !== undefined &&

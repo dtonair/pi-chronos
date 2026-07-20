@@ -62,6 +62,8 @@ export interface JobExecution {
   overlapPolicy: OverlapPolicy;
   missedRunPolicy: MissedRunPolicy;
   sandboxRequired: boolean;
+  /** New jobs use explicit evidence; legacy rows retain process-exit semantics. */
+  completion?: import("./permission.js").CompletionPolicy;
   environment: JobEnvironment;
 }
 

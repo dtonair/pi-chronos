@@ -7,6 +7,7 @@ import {
   ImportFileSchema,
   JobPermissionsSchema,
   JobScheduleSchema,
+  PersistedPermissionsSchema,
   SchedulerToolInputSchema,
 } from "../../../src/api/schemas.js";
 import { ChronosErrorCode } from "../../../src/domain/errors.js";
@@ -18,6 +19,24 @@ function expectErrorCode(result: ReturnType<typeof decodeSchedulerToolInput>, co
 }
 
 describe("schedule schemas and semantics", () => {
+  it("keeps persisted process policy output strict while input remains legacy-compatible", () => {
+    const value = {
+      schemaVersion: 1,
+      value: {
+        tools: [],
+        shell: { allowed: false, commands: [] },
+        filesystem: { readPaths: [], writePaths: [] },
+        network: { allowed: false, domains: [] },
+        extensions: { allowedIds: [] },
+        secrets: { allowedNames: [] },
+        process: { allowed: false, commands: [] },
+      },
+    };
+    expect(Value.Check(PersistedPermissionsSchema, value)).toBe(true);
+    expect(
+      Value.Check(PersistedPermissionsSchema, { ...value, value: { ...value.value, extra: true } }),
+    ).toBe(false);
+  });
   it("accepts the exact once schedule contract", () => {
     expect(
       Value.Check(JobScheduleSchema, {

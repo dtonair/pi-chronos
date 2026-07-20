@@ -127,8 +127,37 @@ function isScheduleValue(value: unknown): boolean {
   );
 }
 
+function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const expected = new Set(keys);
+  return Object.keys(value).every((key) => expected.has(key)) && keys.every((key) => key in value);
+}
+
+function isCompletionValue(
+  value: unknown,
+): value is import("../domain/permission.js").CompletionPolicy {
+  if (!isRecord(value) || typeof value.mode !== "string") return false;
+  if (value.mode === "process_exit") return exactKeys(value, ["mode"]);
+  if (
+    value.mode !== "explicit" ||
+    !exactKeys(value, ["mode", "requiredOutputs"]) ||
+    !Array.isArray(value.requiredOutputs)
+  )
+    return false;
+  return value.requiredOutputs.every((output) => {
+    return (
+      isRecord(output) &&
+      exactKeys(output, ["path", "mutation"]) &&
+      typeof output.path === "string" &&
+      (output.mutation === "exists" || output.mutation === "atomic_replace")
+    );
+  });
+}
+
 function isPermissionsValue(value: unknown): value is JobPermissions {
   if (!isRecord(value)) return false;
+  const permissionKeys = ["tools", "shell", "filesystem", "network", "extensions", "secrets"];
+  if (value.process !== undefined) permissionKeys.push("process");
+  if (!exactKeys(value, permissionKeys)) return false;
   const shell = value.shell;
   const filesystem = value.filesystem;
   const network = value.network;
@@ -137,18 +166,48 @@ function isPermissionsValue(value: unknown): value is JobPermissions {
   return (
     Array.isArray(value.tools) &&
     isRecord(shell) &&
+    exactKeys(shell, ["allowed", "commands"]) &&
     typeof shell.allowed === "boolean" &&
     Array.isArray(shell.commands) &&
     isRecord(filesystem) &&
+    exactKeys(filesystem, ["readPaths", "writePaths"]) &&
     Array.isArray(filesystem.readPaths) &&
     Array.isArray(filesystem.writePaths) &&
     isRecord(network) &&
+    exactKeys(network, ["allowed", "domains"]) &&
     typeof network.allowed === "boolean" &&
     Array.isArray(network.domains) &&
     isRecord(extensions) &&
+    exactKeys(extensions, ["allowedIds"]) &&
     Array.isArray(extensions.allowedIds) &&
     isRecord(secrets) &&
-    Array.isArray(secrets.allowedNames)
+    exactKeys(secrets, ["allowedNames"]) &&
+    Array.isArray(secrets.allowedNames) &&
+    (value.process === undefined ||
+      (isRecord(value.process) &&
+        exactKeys(value.process, ["allowed", "commands"]) &&
+        typeof value.process.allowed === "boolean" &&
+        Array.isArray(value.process.commands) &&
+        value.process.commands.every(
+          (command) =>
+            isRecord(command) &&
+            exactKeys(command, ["executable", "args"]) &&
+            typeof command.executable === "string" &&
+            Array.isArray(command.args) &&
+            command.args.every((arg) => {
+              if (!isRecord(arg) || typeof arg.kind !== "string") return false;
+              if (arg.kind === "literal")
+                return exactKeys(arg, ["kind", "value"]) && typeof arg.value === "string";
+              return (
+                arg.kind === "slot" &&
+                exactKeys(arg, ["kind", "name", "valueType"]) &&
+                typeof arg.name === "string" &&
+                (arg.valueType === "uuid" ||
+                  arg.valueType === "integer" ||
+                  arg.valueType === "slug")
+              );
+            }),
+        )))
   );
 }
 
@@ -238,6 +297,7 @@ export function decodeJobRow(row: JobRow): Result<Job> {
     overlapPolicy: string;
     missedRunPolicy: string;
     sandboxRequired: boolean;
+    completion?: import("../domain/permission.js").CompletionPolicy;
     environment: { values: Record<string, string>; secretNames: string[] };
   };
   try {
@@ -253,6 +313,7 @@ export function decodeJobRow(row: JobRow): Result<Job> {
       parsed.overlapPolicy !== "skip" ||
       (parsed.missedRunPolicy !== "skip" && parsed.missedRunPolicy !== "run_once") ||
       typeof parsed.sandboxRequired !== "boolean" ||
+      (parsed.completion !== undefined && !isCompletionValue(parsed.completion)) ||
       !isRecord(parsed.environment) ||
       !isRecord(parsed.environment.values) ||
       !Object.values(parsed.environment.values).every((value) => typeof value === "string") ||
@@ -311,9 +372,13 @@ export function decodeJobRow(row: JobRow): Result<Job> {
         overlapPolicy: executionJson.overlapPolicy as "skip",
         missedRunPolicy: executionJson.missedRunPolicy as "skip" | "run_once",
         sandboxRequired: executionJson.sandboxRequired,
+        completion: executionJson.completion ?? { mode: "process_exit" },
         environment: executionJson.environment,
       },
-      permissions: permissionsParsed.value,
+      permissions: {
+        ...permissionsParsed.value,
+        process: permissionsParsed.value.process ?? { allowed: false, commands: [] },
+      },
       source: row.source as Job["definition"]["source"],
       importKey: row.import_key ?? undefined,
     },
@@ -352,11 +417,15 @@ export function encodeJobRow(job: Job): JobRow {
     overlapPolicy: job.definition.execution.overlapPolicy,
     missedRunPolicy: job.definition.execution.missedRunPolicy,
     sandboxRequired: job.definition.execution.sandboxRequired,
+    completion: job.definition.execution.completion ?? { mode: "process_exit" },
     environment: job.definition.execution.environment,
   });
   const permissionsJson = JSON.stringify({
     schemaVersion: 1,
-    value: job.definition.permissions,
+    value: {
+      ...job.definition.permissions,
+      process: job.definition.permissions.process ?? { allowed: false, commands: [] },
+    },
   });
 
   return {
@@ -438,6 +507,7 @@ export function decodeRunRow(row: RunRow): Result<Run> {
     },
     ownerId: row.executor_id ?? undefined,
     leaseDeadline: parseTimestampStrict(row.lease_expires_at),
+    failureCode: row.error_code ?? undefined,
     output:
       row.output_summary !== null
         ? {
@@ -450,6 +520,16 @@ export function decodeRunRow(row: RunRow): Result<Run> {
             toolActivity: Array.isArray(metadata.toolActivity)
               ? metadata.toolActivity.filter((item): item is string => typeof item === "string")
               : undefined,
+            completionSummary:
+              typeof metadata.completionSummary === "string"
+                ? metadata.completionSummary
+                : undefined,
+            completionCategory:
+              typeof metadata.completionCategory === "string"
+                ? metadata.completionCategory
+                : undefined,
+            toolErrorCount:
+              typeof metadata.toolErrorCount === "number" ? metadata.toolErrorCount : undefined,
           }
         : undefined,
     skipReason: undefined, // populated from metadata
@@ -480,6 +560,12 @@ export function encodeRunRow(run: Run): RunRow {
   if (run.output?.stopReason !== undefined) metadata.stopReason = run.output.stopReason;
   if (run.output?.toolActivity !== undefined)
     metadata.toolActivity = run.output.toolActivity.slice(0, 1_000);
+  if (run.output?.completionSummary !== undefined)
+    metadata.completionSummary = run.output.completionSummary.slice(0, 4_096);
+  if (run.output?.completionCategory !== undefined)
+    metadata.completionCategory = run.output.completionCategory.slice(0, 64);
+  if (run.output?.toolErrorCount !== undefined)
+    metadata.toolErrorCount = Math.max(0, Math.min(1_000, run.output.toolErrorCount));
 
   return {
     id: run.id,
@@ -499,7 +585,7 @@ export function encodeRunRow(run: Run): RunRow {
     output_summary: run.output?.summary ?? null,
     output_location: run.output?.artifactPath ?? null,
     output_truncated: run.output?.truncated ? 1 : 0,
-    error_code: run.skipReason ?? null,
+    error_code: run.failureCode ?? run.skipReason ?? null,
     error_message: null,
     error_details: null,
     metadata_json: Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : null,

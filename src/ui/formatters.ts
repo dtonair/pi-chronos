@@ -4,5 +4,9 @@ export function formatJob(job: Job): string {
   return `${job.definition.name} [${job.status}] next=${job.nextRunAt ? new Date(job.nextRunAt).toISOString() : "none"}`;
 }
 export function formatRun(run: Run): string {
-  return `${run.id} ${run.status} ${new Date(run.occurrenceAt).toISOString()}`;
+  const category = run.failureCode ? ` category=${run.failureCode}` : "";
+  const completion = run.output?.completionSummary
+    ? ` completion=${run.output.completionSummary}`
+    : "";
+  return `${run.id} ${run.status} ${new Date(run.occurrenceAt).toISOString()}${category}${completion}`;
 }

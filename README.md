@@ -4,7 +4,7 @@ Durable scheduled agent execution for Pi. Chronos stores jobs and runs in SQLite
 
 ## Boundaries
 
-Chronos guards every child tool call with an exact tool, shell, and canonical path policy. This is separate from OS sandboxing; `sandboxRequired` fails closed when no supported sandbox adapter is available. When `pi-seatbelt-sandbox` publishes an active profile through `PI_SEATBELT_PROFILE`, Chronos launches its child Pi under that profile unchanged instead of adding narrower filesystem or network rules. Secrets are resolved only at launch and redacted before persistence. No jobs run while all Pi processes are closed.
+Chronos guards every child tool call with an exact tool, shell, and canonical path policy. This is separate from OS sandboxing; `sandboxRequired` creates a private run-specific `tool-subprocess-v1` profile and fails closed when it cannot be applied. The child Pi launches directly on the host for normal provider authentication; only guarded Bash and structured process commands enter the run profile. Chronos deliberately ignores `PI_SEATBELT_PROFILE`, which is an interactive session/workspace export. Secrets are resolved only at launch and redacted before persistence. No jobs run while all Pi processes are closed.
 
 ## Use
 
@@ -53,9 +53,17 @@ Example:
 
 Project trust is required before Chronos reads this file; trust never grants execution approval.
 
+## Scheduled command tools
+
+Jobs may opt into `chronos_exec` with exact executable/argv rules and bounded `uuid`, `integer`, or `slug` slots. `chronos_atomic_write` replaces one approved report path without granting generic file writing, and `chronos_complete` supplies explicit terminal evidence. New jobs default to explicit completion; legacy stored jobs retain exact Bash and process-exit behavior until updated. Any process, output, or completion change changes the approval fingerprint.
+
+`network.domains` is approval-bound intent; macOS Seatbelt enforces only coarse network disabled/enabled. With `sandboxRequired`, the child Pi remains host-side for provider authentication while Bash and structured commands run under an independent run-specific Seatbelt profile. The interactive `pi-seatbelt-sandbox` profile is never reused.
+
+Manual Bitbucket smoke testing is opt-in only: configure a local fake or the installed `bitbucket-cli`, create a job with a private config read root, exact list/get rules, an approved `PIPELINE_STATUS.md` atomic output, and explicit completion. Do not place credentials in prompts, argv, fixtures, or logs; automated tests use the deterministic fake fixture.
+
 ## Troubleshooting
 
 - `INTERACTIVE_APPROVAL_REQUIRED`: approve from the TUI or RPC confirmation flow; JSON and print modes never wait for input.
-- `SANDBOX_UNAVAILABLE`: the job requested an OS sandbox that is not supported or could not be initialized. With `pi-seatbelt-sandbox`, ensure its extension is active and its published profile permits the Pi executable, Chronos guard/manifest paths, the job workspace, and required provider network access. Tool and path policy remain distinct and fail closed when required.
+- `SANDBOX_UNAVAILABLE`: the job requested a run-specific OS sandbox that is not supported or could not be initialized/applied. `pi-seatbelt-sandbox` governs interactive Bash independently; its session profile is never used by Chronos. Tool/path policy and OS command isolation remain distinct, and network domains are approved intent while Seatbelt enforcement is coarse network off/on.
 - `DB_LOCKED`: another Pi process is using SQLite. Chronos retries through SQLite's busy timeout; inspect `/chronos health` if the condition persists.
 - A missing import file disables its previously imported jobs rather than deleting their history.

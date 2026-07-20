@@ -1,14 +1,24 @@
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { ChronosError, ChronosErrorCode } from "../domain/errors.js";
 import type { Job, UTCTimestamp } from "../domain/job.js";
 import type { Run, RunOutput } from "../domain/run.js";
 import { validateEnvironment } from "../security/environment-policy.js";
+import { checkPathAllowed } from "../security/path-policy.js";
 import { PolicyManifestStore } from "../security/policy-manifest.js";
-import type { SandboxAdapter, SandboxHandle } from "../security/sandbox-adapter.js";
+import { resolveExecutable } from "../security/process-policy.js";
+import {
+  CHRONOS_SANDBOX_REQUIRED_ENV,
+  CHRONOS_SEATBELT_PROFILE_ENV,
+  type SandboxAdapter,
+  type SandboxHandle,
+} from "../security/sandbox-adapter.js";
 import type { Result } from "../shared/result.js";
 import { err, ok } from "../shared/result.js";
 import { ArtifactStore } from "./artifact-store.js";
 import { buildChildContext } from "./context-builder.js";
 import { JsonlParser } from "./jsonl-parser.js";
+import { reduceTerminalOutcome } from "./outcome.js";
 import { limitOutput } from "./output-limiter.js";
 import { buildPiInvocation } from "./pi-invocation.js";
 import { spawnChild } from "./process-control.js";
@@ -28,6 +38,7 @@ export interface SubagentResult {
   status: "succeeded" | "failed" | "timed_out" | "cancelled";
   output?: RunOutput;
   error?: string;
+  errorCode?: string;
 }
 
 export async function executeSubagent(
@@ -46,8 +57,10 @@ export async function executeSubagent(
     tools: job.definition.permissions.tools,
     guardExtension: options.guardExtension,
   });
-  let executable = invocation.executable;
-  let args = invocation.args;
+  // The child Pi stays on the host so it can resolve provider auth and its
+  // normal agent settings. Only trusted command tools consume the run profile.
+  const executable = invocation.executable;
+  const args = invocation.args;
   let sandboxHandle: SandboxHandle | undefined;
   if (job.definition.execution.sandboxRequired) {
     if (options.sandbox === undefined) {
@@ -64,12 +77,15 @@ export async function executeSubagent(
       readPaths: job.definition.permissions.filesystem.readPaths,
       writePaths: job.definition.permissions.filesystem.writePaths,
       networkAllowed: job.definition.permissions.network.allowed,
+      executablePaths: (job.definition.permissions.process?.commands ?? [])
+        .map((command) => {
+          const resolved = resolveExecutable(command.executable);
+          return resolved.ok ? resolved.value : undefined;
+        })
+        .filter((path): path is string => path !== undefined),
     });
     if (!sandbox.ok) return sandbox;
     sandboxHandle = sandbox.value;
-    const wrapped = sandboxHandle.wrapExecutable(executable, args);
-    executable = wrapped.executable;
-    args = [...wrapped.args];
   }
   const manifestStore = options.manifestDirectory
     ? new PolicyManifestStore(options.manifestDirectory)
@@ -95,14 +111,33 @@ export async function executeSubagent(
     await sandboxHandle?.close();
     return manifest;
   }
-  const environment: Record<string, string> = { PATH: process.env.PATH ?? "" };
+  const environment: Record<string, string> = {};
+  for (const name of [
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "TMPDIR",
+    "PI_CODING_AGENT_DIR",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+  ]) {
+    const value = process.env[name];
+    if (value !== undefined) environment[name] = value;
+  }
   const secretValues: string[] = [];
+  environment.CHRONOS_MAX_OUTPUT_BYTES = String(job.definition.execution.maxOutputBytes);
+  environment.CHRONOS_TIMEOUT_MS = String(job.definition.execution.timeoutMs);
   if (manifest?.ok) {
     environment.CHRONOS_POLICY_MANIFEST = manifest.value.path;
     environment.CHRONOS_RUN_ID = run.id;
     environment.CHRONOS_JOB_ID = job.id;
     environment.CHRONOS_OWNER_ID = options.ownerId ?? "unknown";
     environment.CHRONOS_FINGERPRINT = job.fingerprint;
+  }
+  if (sandboxHandle?.profilePath !== undefined) {
+    environment[CHRONOS_SEATBELT_PROFILE_ENV] = sandboxHandle.profilePath;
+    environment[CHRONOS_SANDBOX_REQUIRED_ENV] = "1";
   }
   Object.assign(environment, job.definition.execution.environment.values);
   for (const name of job.definition.execution.environment.secretNames) {
@@ -205,6 +240,49 @@ export async function executeSubagent(
     outputTruncated && !limited.text.includes("[output truncated]")
       ? `${limited.text}\n[output truncated]`
       : limited.text;
+  const completion = job.definition.execution.completion ?? { mode: "process_exit" as const };
+  const requiredOutputs =
+    completion.mode === "explicit"
+      ? await Promise.all(
+          completion.requiredOutputs.map(async (output) => {
+            const allowed = await checkPathAllowed(
+              output.path,
+              job.definition.execution.workingDirectory,
+              "write",
+              job.definition.permissions,
+            );
+            if (!allowed.ok) return false;
+            const target = allowed.value;
+            const present = existsSync(target);
+            return output.mutation === "atomic_replace"
+              ? present &&
+                  parsed.atomicWrites.some(
+                    (written) =>
+                      resolve(job.definition.execution.workingDirectory, written) === target,
+                  )
+              : present;
+          }),
+        )
+      : undefined;
+  let completionSummary: string | undefined;
+  if (parsed.completion?.summary !== undefined) {
+    const safeCompletion = redactText(parsed.completion.summary, [
+      ...Object.values(job.definition.execution.environment.values),
+      ...secretValues,
+    ]);
+    if (!safeCompletion.ok) return safeCompletion;
+    completionSummary = safeCompletion.value.slice(0, 4_096);
+  }
+  const outcome = reduceTerminalOutcome({
+    completion,
+    exitCode: completed.exitCode,
+    timedOut,
+    cancelled,
+    protocolFailure: parsed.protocolFailure || parsed.malformedLines > 0,
+    completionDeclarations: parsed.completionDeclarations,
+    completionStatus: parsed.completion?.status,
+    requiredOutputs,
+  });
   let output: RunOutput = {
     summary: outputSummary,
     truncated: outputTruncated,
@@ -212,6 +290,9 @@ export async function executeSubagent(
     stopReason: parsed.stopReason,
     toolActivity: parsed.toolActivity,
     usage: { inputTokens: parsed.inputTokens, outputTokens: parsed.outputTokens },
+    completionSummary,
+    completionCategory: outcome.category,
+    toolErrorCount: parsed.toolErrorCount,
   };
   if (options.artifactDirectory !== undefined) {
     const artifact = await new ArtifactStore(options.artifactDirectory).write(
@@ -221,11 +302,16 @@ export async function executeSubagent(
     if (!artifact.ok) return artifact;
     output = { ...output, artifactPath: artifact.value };
   }
-  if (timedOut) return ok({ status: "timed_out", output, error: "Execution timed out" });
-  if (cancelled) return ok({ status: "cancelled", output, error: "Execution cancelled" });
   return ok({
-    status: completed.exitCode === 0 ? "succeeded" : "failed",
+    status: outcome.status as SubagentResult["status"],
     output,
-    error: completed.exitCode === 0 ? undefined : completed.stderr || "Child exited unsuccessfully",
+    errorCode: outcome.category,
+    error:
+      outcome.category === "command_failure"
+        ? completed.stderr || outcome.message
+        : (outcome.message ??
+          (outcome.status === "failed"
+            ? completed.stderr || "Child exited unsuccessfully"
+            : undefined)),
   });
 }

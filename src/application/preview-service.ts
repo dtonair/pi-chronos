@@ -10,7 +10,11 @@
 
 import { ChronosError, ChronosErrorCode } from "../domain/errors.js";
 import type { JobSchedule, UTCTimestamp } from "../domain/job.js";
-import type { EffectivePermissions, JobPermissions } from "../domain/permission.js";
+import type {
+  CompletionPolicy,
+  EffectivePermissions,
+  JobPermissions,
+} from "../domain/permission.js";
 import type { CronCalculator } from "../scheduler/cron.js";
 import type { SchedulePreview } from "../scheduler/preview.js";
 import { previewSchedule } from "../scheduler/preview.js";
@@ -52,6 +56,15 @@ export function calculateEffectivePermissions(permissions: JobPermissions): Effe
     network: { ...permissions.network, domains: [...permissions.network.domains] },
     extensions: { ...permissions.extensions, allowedIds: [...permissions.extensions.allowedIds] },
     secrets: { ...permissions.secrets, allowedNames: [...permissions.secrets.allowedNames] },
+    process: permissions.process
+      ? {
+          allowed: permissions.process.allowed,
+          commands: permissions.process.commands.map((command) => ({
+            executable: command.executable,
+            args: command.args.map((arg) => ({ ...arg })),
+          })),
+        }
+      : { allowed: false, commands: [] },
     canonicalReadPaths: [],
     canonicalWritePaths: [],
   };
@@ -60,8 +73,42 @@ export function calculateEffectivePermissions(permissions: JobPermissions): Effe
 /**
  * Validate that permissions are within supported bounds.
  */
+export function validateCompletionPolicy(completion: CompletionPolicy | undefined): Result<void> {
+  if (completion === undefined || completion.mode === "process_exit") return ok(undefined);
+  const seen = new Set<string>();
+  for (const output of completion.requiredOutputs) {
+    if (
+      output.path.length === 0 ||
+      output.path === "/" ||
+      output.path === "\\" ||
+      output.path === "." ||
+      seen.has(output.path)
+    ) {
+      return err(
+        new ChronosError({
+          code: ChronosErrorCode.VALIDATION_ERROR,
+          message: "Required output path is invalid or duplicated",
+        }),
+      );
+    }
+    seen.add(output.path);
+  }
+  return ok(undefined);
+}
+
 export function validateEffectivePermissions(permissions: JobPermissions): Result<void> {
-  const supported = new Set(["read", "grep", "find", "ls", "edit", "write", "bash"]);
+  const supported = new Set([
+    "read",
+    "grep",
+    "find",
+    "ls",
+    "edit",
+    "write",
+    "bash",
+    "chronos_exec",
+    "chronos_atomic_write",
+    "chronos_complete",
+  ]);
   const unsupported = permissions.tools.find((tool) => !supported.has(tool));
   if (unsupported !== undefined) {
     return err(
@@ -81,6 +128,41 @@ export function validateEffectivePermissions(permissions: JobPermissions): Resul
         message: "Filesystem policy cannot grant a filesystem root",
       }),
     );
+  }
+  const process = permissions.process;
+  if (process !== undefined) {
+    if (!process.allowed && process.commands.length > 0) {
+      return err(
+        new ChronosError({
+          code: ChronosErrorCode.VALIDATION_ERROR,
+          message: "process.commands must be empty when process.allowed is false",
+        }),
+      );
+    }
+    for (const rule of process.commands) {
+      const slotNames = new Set<string>();
+      if (rule.executable.trim().length === 0 || rule.executable.length > 4_096) {
+        return err(
+          new ChronosError({
+            code: ChronosErrorCode.VALIDATION_ERROR,
+            message: "Process executable is invalid",
+          }),
+        );
+      }
+      for (const arg of rule.args) {
+        if (arg.kind === "slot") {
+          if (slotNames.has(arg.name)) {
+            return err(
+              new ChronosError({
+                code: ChronosErrorCode.VALIDATION_ERROR,
+                message: "Process slot names must be unique",
+              }),
+            );
+          }
+          slotNames.add(arg.name);
+        }
+      }
+    }
   }
   if (permissions.extensions.allowedIds.length > 0) {
     return err(

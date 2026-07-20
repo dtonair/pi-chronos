@@ -40,7 +40,9 @@ export type * from "./domain/instance.js";
 export type * from "./domain/job.js";
 export type * from "./domain/permission.js";
 export type * from "./domain/run.js";
+export { atomicWrite } from "./execution/atomic-write.js";
 export { JsonlParser } from "./execution/jsonl-parser.js";
+export { reduceTerminalOutcome } from "./execution/outcome.js";
 export { limitOutput } from "./execution/output-limiter.js";
 export { buildPiInvocation, findPiExecutable } from "./execution/pi-invocation.js";
 export { redactText } from "./execution/redactor.js";
@@ -71,6 +73,13 @@ export { calculateTimerDelay, isDelayClamped } from "./scheduler/timer-delay.js"
 export { checkPathAllowed } from "./security/path-policy.js";
 export { authorizeToolCall } from "./security/policy-engine.js";
 export { PolicyManifestStore } from "./security/policy-manifest.js";
+export {
+  authorizeStructuredProcess,
+  resolveExecutable,
+  validateSlotValue,
+} from "./security/process-policy.js";
+export { createPlatformSandboxAdapter } from "./security/sandbox-adapter.js";
+export { renderSeatbeltProfile } from "./security/seatbelt-profile.js";
 export { checkShellCommand } from "./security/shell-policy.js";
 export { createEventBus } from "./shared/event-bus.js";
 export type * from "./shared/ports.js";

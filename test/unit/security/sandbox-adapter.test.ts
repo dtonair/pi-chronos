@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -45,6 +45,29 @@ describe("OS sandbox adapter", () => {
     }
   });
 
+  it("probes sandbox application with a permissive policy instead of a process-only false negative", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "chronos-sandbox-probe-"));
+    const executable = join(directory, "sandbox-exec");
+    const log = join(directory, "argv.log");
+    writeFileSync(
+      executable,
+      `#!/bin/sh\nprintf '%s\\n' "$@" >> ${JSON.stringify(log)}\ncase "$*" in *"(allow default)"*) exit 0;; *"-f"*) exit 0;; *) exit 71;; esac\n`,
+    );
+    chmodSync(executable, 0o700);
+    try {
+      const adapter = createPlatformSandboxAdapter("darwin", executable, true, () => undefined);
+      expect(adapter.supported).toBe(true);
+      const result = await adapter.initialize({ workingDirectory: directory, readOnly: true });
+      expect(result.ok).toBe(true);
+      if (result.ok) await result.value.close();
+      const argv = readFileSync(log, "utf8");
+      expect(argv).toContain("(allow default)");
+      expect(argv).not.toMatch(/^--$/m);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("probes the host adapter and fails closed when sandbox application is unavailable", () => {
     const adapter = createPlatformSandboxAdapter(
       "darwin",
@@ -53,6 +76,18 @@ describe("OS sandbox adapter", () => {
       () => undefined,
     );
     expect(typeof adapter.supported).toBe("boolean");
+  });
+
+  it("ignores the interactive PI_SEATBELT_PROFILE export", () => {
+    const previous = process.env.PI_SEATBELT_PROFILE;
+    process.env.PI_SEATBELT_PROFILE = "/tmp/session-profile.sb";
+    try {
+      const adapter = createPlatformSandboxAdapter("darwin", "/usr/bin/false", true);
+      expect(adapter.supported).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.PI_SEATBELT_PROFILE;
+      else process.env.PI_SEATBELT_PROFILE = previous;
+    }
   });
 
   it("reuses a published Seatbelt profile without narrowing its policy", async () => {
@@ -80,7 +115,7 @@ describe("OS sandbox adapter", () => {
         const wrapped = result.value.wrapExecutable("/usr/bin/pi", ["--mode", "json"]);
         expect(wrapped).toEqual({
           executable: "/usr/bin/false",
-          args: ["-f", profile, "--", "/usr/bin/pi", "--mode", "json"],
+          args: ["-f", profile, "/usr/bin/pi", "--mode", "json"],
         });
         expect(wrapped.args.join(" ")).not.toContain("/private/job");
       }

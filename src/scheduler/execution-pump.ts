@@ -11,6 +11,7 @@ import { inImmediateTransaction } from "../storage/transaction.js";
 export interface PumpExecutionResult {
   status: "succeeded" | "failed" | "timed_out" | "cancelled";
   message?: string;
+  errorCode?: string;
   output?: Run["output"];
 }
 
@@ -92,7 +93,11 @@ export function createExecutionPump(options: ExecutionPumpOptions) {
           options.instanceId,
           outcome.status,
           options.clock.now(),
-          { output: outcome.output, error: outcome.message },
+          {
+            output: outcome.output,
+            error: outcome.message,
+            errorCode: outcome.errorCode,
+          },
         );
         if (!transitioned.ok) return transitioned;
         const counters = updateJobRunCounters(

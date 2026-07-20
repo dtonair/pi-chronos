@@ -1,4 +1,5 @@
-const SENSITIVE = /prompt|model|permission|environment|secret|command|path|domain/i;
+const SENSITIVE =
+  /prompt|model|permission|environment|secret|command|path|domain|process|completion/i;
 
 export interface ImportDiff {
   field: string;

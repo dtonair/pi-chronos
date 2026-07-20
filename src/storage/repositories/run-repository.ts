@@ -152,7 +152,12 @@ export function transitionRunStatus(
   executorId: string | undefined,
   newStatus: RunStatus,
   timestamp: UTCTimestamp,
-  details: { output?: Run["output"]; error?: string; recover?: boolean } = {},
+  details: {
+    output?: Run["output"];
+    error?: string;
+    errorCode?: string;
+    recover?: boolean;
+  } = {},
 ): Result<Run> {
   // Terminal immutability check
   const existing = adapter.get<RunRow>("SELECT * FROM job_runs WHERE id = ?", runId);
@@ -224,6 +229,10 @@ export function transitionRunStatus(
   if (details.error !== undefined) {
     updates.push("error_message = ?");
     params.push(details.error);
+  }
+  if (details.errorCode !== undefined) {
+    updates.push("error_code = ?");
+    params.push(details.errorCode);
   }
 
   if (isTerminalRunStatus(newStatus as RunStatus)) {

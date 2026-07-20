@@ -7,11 +7,19 @@ import { err, ok } from "../shared/result.js";
 import { removeSchedulerTool } from "./guard-tools.js";
 
 /** Host-neutral trusted child guard; a Pi adapter can bind these methods to lifecycle hooks. */
+export interface RunnerGuardOptions {
+  profilePath?: string;
+  sandboxRequired?: boolean;
+  maxOutputBytes?: number;
+  timeoutMs?: number;
+}
+
 export function createRunnerGuard(
   manifest: PolicyManifest,
   cwd: string,
   canonicalizer?: PathCanonicalizer,
   events?: EventSink,
+  options: RunnerGuardOptions = {},
 ) {
   let active = false;
   function sessionStart(now: number): Result<void> {
@@ -25,7 +33,7 @@ export function createRunnerGuard(
     active = true;
     return ok(undefined);
   }
-  async function authorize(call: ToolCall): Promise<ReturnType<typeof authorizeToolCall>> {
+  async function authorize(call: ToolCall): Promise<Awaited<ReturnType<typeof authorizeToolCall>>> {
     if (!active || call.tool === "scheduler") {
       return err(
         new ChronosError({
@@ -39,6 +47,8 @@ export function createRunnerGuard(
       permissions: manifest.permissions,
       canonicalizer,
       events,
+      sandboxProfilePath: options.profilePath,
+      sandboxRequired: options.sandboxRequired,
     });
   }
   function tools<T extends { name: string }>(available: readonly T[]): T[] {
@@ -49,6 +59,12 @@ export function createRunnerGuard(
   }
   return {
     sessionStart,
+    sandboxProfilePath: options.profilePath,
+    permissions: manifest.permissions,
+    cwd,
+    sandboxRequired: options.sandboxRequired,
+    maxOutputBytes: options.maxOutputBytes,
+    timeoutMs: options.timeoutMs,
     authorize,
     tools,
     sessionShutdown,

@@ -10,12 +10,22 @@ export interface ExecutorOptions extends SubagentOptions {
 export function createExecutor(options: ExecutorOptions): RunExecutor {
   return async (run: Run, signal: AbortSignal) => {
     const job = options.getJob(run.jobId);
-    if (!job) return { status: "failed", message: "Job was deleted before execution" };
+    if (!job)
+      return {
+        status: "failed",
+        message: "Job was deleted before execution",
+      };
     const result = await executeSubagent(job, run, signal, options);
-    if (!result.ok) return { status: "failed", message: result.error.message };
+    if (!result.ok)
+      return {
+        status: "failed",
+        message: result.error.message,
+        errorCode: result.error.code,
+      };
     return {
       status: result.value.status,
       message: result.value.error,
+      errorCode: result.value.errorCode,
       output: result.value.output,
     };
   };
