@@ -3,6 +3,7 @@
  * atomic claim helpers, and paginated history queries.
  */
 
+import { Buffer } from "node:buffer";
 import { ChronosError, ChronosErrorCode } from "../../domain/errors.js";
 import type { UTCTimestamp } from "../../domain/job.js";
 import type { Run, RunStatus } from "../../domain/run.js";
@@ -151,6 +152,7 @@ export function transitionRunStatus(
   executorId: string | undefined,
   newStatus: RunStatus,
   timestamp: UTCTimestamp,
+  details: { output?: Run["output"]; error?: string; recover?: boolean } = {},
 ): Result<Run> {
   // Terminal immutability check
   const existing = adapter.get<RunRow>("SELECT * FROM job_runs WHERE id = ?", runId);
@@ -178,8 +180,7 @@ export function transitionRunStatus(
   // Ownership check: if the run has an executor, only that executor can transition
   if (
     existing.executor_id !== null &&
-    executorId !== undefined &&
-    existing.executor_id !== executorId
+    (executorId === undefined || existing.executor_id !== executorId)
   ) {
     return err(
       new ChronosError({
@@ -188,6 +189,19 @@ export function transitionRunStatus(
         entity: runId,
       }),
     );
+  }
+
+  if (existing.executor_id !== null && existing.lease_expires_at !== null) {
+    const lease = Date.parse(existing.lease_expires_at);
+    if (!details.recover && !Number.isNaN(lease) && lease <= timestamp) {
+      return err(
+        new ChronosError({
+          code: ChronosErrorCode.RUN_LEASE_EXPIRED,
+          message: `Lease expired for run ${runId}`,
+          entity: runId,
+        }),
+      );
+    }
   }
 
   // Build update fields based on target status
@@ -199,6 +213,19 @@ export function transitionRunStatus(
     params.push(new Date(timestamp).toISOString());
   }
 
+  if (details.output !== undefined) {
+    updates.push("output_summary = ?", "output_truncated = ?", "output_location = ?");
+    params.push(
+      details.output.summary,
+      details.output.truncated ? 1 : 0,
+      details.output.artifactPath ?? null,
+    );
+  }
+  if (details.error !== undefined) {
+    updates.push("error_message = ?");
+    params.push(details.error);
+  }
+
   if (isTerminalRunStatus(newStatus as RunStatus)) {
     updates.push("finished_at = ?");
     params.push(new Date(timestamp).toISOString());
@@ -206,8 +233,37 @@ export function transitionRunStatus(
     updates.push("executor_id = NULL");
   }
 
-  params.push(runId);
-  adapter.run(`UPDATE job_runs SET ${updates.join(", ")} WHERE id = ?`, ...params);
+  // Make the ownership and state checks part of the write itself. The row can
+  // change between the read above and this update (for example, recovery in a
+  // second scheduler), so a read-only check is not sufficient for a CAS.
+  let where = " WHERE id = ? AND status = ?";
+  const whereParams: (string | number | null)[] = [runId, existing.status];
+  if (existing.executor_id === null) {
+    where += " AND executor_id IS NULL";
+  } else {
+    where += " AND executor_id = ?";
+    whereParams.push(existing.executor_id);
+  }
+  if (!details.recover && existing.lease_expires_at !== null) {
+    where += " AND lease_expires_at > ?";
+    whereParams.push(new Date(timestamp).toISOString());
+  }
+  const updateResult = adapter.run(
+    `UPDATE job_runs SET ${updates.join(", ")}${where}`,
+    ...params,
+    ...whereParams,
+  );
+  if (updateResult.changes === 0) {
+    return err(
+      new ChronosError({
+        code: details.recover
+          ? ChronosErrorCode.RUN_ALREADY_TERMINAL
+          : ChronosErrorCode.RUN_LEASE_EXPIRED,
+        message: `Run ${runId} changed before transition could be persisted`,
+        entity: runId,
+      }),
+    );
+  }
 
   const row = adapter.get<RunRow>("SELECT * FROM job_runs WHERE id = ?", runId);
   if (row === undefined) {
@@ -307,8 +363,14 @@ export function listRuns(
     params.push(options.status);
   }
   if (options.cursor !== undefined) {
-    clauses.push("id > ?");
-    params.push(options.cursor);
+    const cursor = decodeHistoryCursor(options.cursor);
+    if (cursor === undefined) {
+      clauses.push("id > ?");
+      params.push(options.cursor);
+    } else {
+      clauses.push("(created_at < ? OR (created_at = ? AND id > ?))");
+      params.push(cursor.createdAt, cursor.createdAt, cursor.id);
+    }
   }
 
   const whereClause = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
@@ -328,8 +390,34 @@ export function listRuns(
     runs.push(result.value);
   }
 
-  const nextCursor = hasMore ? pageRows[pageRows.length - 1]?.id : undefined;
+  const last = pageRows[pageRows.length - 1];
+  const nextCursor = hasMore && last ? encodeHistoryCursor(last.created_at, last.id) : undefined;
   return ok({ runs, nextCursor });
+}
+
+interface HistoryCursor {
+  createdAt: string;
+  id: string;
+}
+
+function encodeHistoryCursor(createdAt: string, id: string): string {
+  return Buffer.from(JSON.stringify({ createdAt, id }), "utf8").toString("base64url");
+}
+
+function decodeHistoryCursor(value: string): HistoryCursor | undefined {
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as { createdAt?: unknown }).createdAt === "string" &&
+      typeof (parsed as { id?: unknown }).id === "string"
+    )
+      return parsed as HistoryCursor;
+  } catch {
+    // Accept legacy id-only cursors below.
+  }
+  return undefined;
 }
 
 // ─── Count runs by status ──────────────────
@@ -344,6 +432,21 @@ export function countRunsByStatus(adapter: DatabaseAdapter, status: RunStatus): 
 
 export function countRunningRuns(adapter: DatabaseAdapter): number {
   return countRunsByStatus(adapter, "running");
+}
+
+export function listOwnedActiveRuns(adapter: DatabaseAdapter, ownerId: string): Run[] {
+  const rows = adapter.all<RunRow>(
+    `SELECT * FROM job_runs
+     WHERE executor_id = ? AND status IN ('claimed', 'running')
+     ORDER BY lease_expires_at ASC, id ASC`,
+    ownerId,
+  );
+  const runs: Run[] = [];
+  for (const row of rows) {
+    const decoded = decodeRunRow(row);
+    if (decoded.ok) runs.push(decoded.value);
+  }
+  return runs;
 }
 
 export function countStaleLeases(adapter: DatabaseAdapter, now: UTCTimestamp): number {

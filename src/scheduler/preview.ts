@@ -1,3 +1,4 @@
+import { ChronosError, ChronosErrorCode } from "../domain/errors.js";
 import type { JobSchedule, OnceSchedule, UTCTimestamp } from "../domain/job.js";
 import type { Result } from "../shared/result.js";
 import { ok } from "../shared/result.js";
@@ -73,6 +74,15 @@ function normalizeSchedule(
     }
 
     case "interval": {
+      if (!Number.isInteger(schedule.everyMs) || schedule.everyMs <= 0) {
+        return {
+          ok: false,
+          error: new ChronosError({
+            code: ChronosErrorCode.INVALID_SCHEDULE,
+            message: "Interval must be a positive integer",
+          }),
+        };
+      }
       const anchor = resolveIntervalAnchor(schedule, clockNow);
 
       const withDefaults: JobSchedule = {
@@ -123,6 +133,7 @@ function upcomingOccurrences(
     }
 
     case "interval": {
+      if (!Number.isInteger(schedule.everyMs) || schedule.everyMs <= 0) return ok([]);
       const anchor = resolveIntervalAnchor(schedule, clockNow);
       const result: string[] = [];
       let after = clockNow;

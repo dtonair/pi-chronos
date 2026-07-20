@@ -50,6 +50,7 @@ function localToUtcMs(localIso: string, timezone: string): number {
     minute: "2-digit",
     second: "2-digit",
     hour12: false,
+    hourCycle: "h23",
   });
 
   // Search ±48h around the naive instant to find a UTC instant that
@@ -96,6 +97,17 @@ export function normalizeOnce(
   }
 
   const timezone = schedule.timezone ?? "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(0);
+  } catch {
+    return err(
+      new ChronosError({
+        code: ChronosErrorCode.TIMEZONE_INVALID,
+        message: `Invalid IANA timezone: ${timezone}`,
+        entity: timezone,
+      }),
+    );
+  }
 
   let runAtMs: number;
 

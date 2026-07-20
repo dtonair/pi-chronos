@@ -58,6 +58,8 @@ export interface RunOutput {
   artifactPath?: string;
   /** Aggregated stop reason from the child. */
   stopReason?: string;
+  /** Bounded names of tools used by the child. */
+  toolActivity?: string[];
   /** Usage stats from the child if available. */
   usage?: ChildUsage;
 }

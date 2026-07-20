@@ -113,7 +113,18 @@ export interface SchedulerHealth {
   activeJobs: number;
   pendingApprovalJobs: number;
   runningRuns: number;
+  metrics?: {
+    wakes: number;
+    dispatches: number;
+    queuedRuns: number;
+    succeeded: number;
+    failed: number;
+    skipped: number;
+    abandoned: number;
+    policyDenials: number;
+  };
   lastSchedulerError?: SchedulerErrorPayload;
+  lastObservabilityError?: { message: string; timestamp: string };
   enforcement: {
     toolAndPathPolicy: "active" | "inactive";
     osSandbox: "active" | "unavailable" | "disabled";

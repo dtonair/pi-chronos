@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   normalized_name         TEXT NOT NULL,
   description             TEXT,
   prompt                  TEXT NOT NULL,
+  tags_json               TEXT NOT NULL DEFAULT '[]',
   status                  TEXT NOT NULL DEFAULT 'draft',
   scope                   TEXT NOT NULL,
   scope_key               TEXT NOT NULL,

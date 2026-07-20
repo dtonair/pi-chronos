@@ -3,8 +3,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AuditEvent } from "../../../src/domain/audit.js";
+import { ChronosError, ChronosErrorCode } from "../../../src/domain/errors.js";
 import type { UTCTimestamp } from "../../../src/domain/job.js";
 import { createDeterministicIdGenerator } from "../../../src/shared/ids.js";
+import { err } from "../../../src/shared/result.js";
 import {
   createApproval,
   getActiveApproval,
@@ -12,26 +14,34 @@ import {
 } from "../../../src/storage/repositories/approval-repository.js";
 import {
   appendAuditEvent,
+  appendAuditEvents,
   listAuditEvents,
 } from "../../../src/storage/repositories/audit-repository.js";
 import {
   getInstanceById,
   getStaleInstances,
+  isInstanceActive,
   registerInstance,
   stopInstance,
   updateHeartbeat,
 } from "../../../src/storage/repositories/instance-repository.js";
 import {
   createJob,
+  deleteJob,
   getDueJobs,
   getJobById,
   listJobs,
   transitionJobStatus,
+  updateJob,
 } from "../../../src/storage/repositories/job-repository.js";
 import {
   claimRun,
+  countRunningRuns,
+  countRunsByStatus,
+  countStaleLeases,
   createRun,
   getRunById,
+  listOwnedActiveRuns,
   listRuns,
   renewRunLease,
   transitionRunStatus,
@@ -55,6 +65,20 @@ describe("Job Repository", () => {
 
   afterEach(() => {
     db.close();
+  });
+
+  it("returns stable missing and delete/CAS results", () => {
+    expect(getJobById(db.adapter, "missing")).toEqual({ ok: true, value: undefined });
+    expect(deleteJob(db.adapter, "missing", 1).ok).toBe(false);
+    const job = createTestJob({ id: "delete-job" });
+    expect(createJob(db.adapter, job).ok).toBe(true);
+    expect(deleteJob(db.adapter, job.id, 99).ok).toBe(false);
+    const updaterError = updateJob(db.adapter, job.id, 1, () =>
+      err(new ChronosError({ code: ChronosErrorCode.VALIDATION_ERROR, message: "invalid" })),
+    );
+    expect(updaterError.ok).toBe(false);
+    expect(deleteJob(db.adapter, job.id, 1).ok).toBe(true);
+    expect(getJobById(db.adapter, job.id)).toEqual({ ok: true, value: undefined });
   });
 
   it("should create and retrieve a job", () => {
@@ -254,6 +278,7 @@ describe("Run Repository", () => {
     if (!claimResult.ok) return;
     expect(claimResult.value.status).toBe("claimed");
     expect(claimResult.value.ownerId).toBe("instance-1");
+    expect(listOwnedActiveRuns(db.adapter, "instance-1")).toHaveLength(1);
   });
 
   it("should fail claiming an already-claimed run", () => {
@@ -311,6 +336,77 @@ describe("Run Repository", () => {
     expect(result.value.status).toBe("running");
   });
 
+  it("rejects missing, wrong-owner, and expired-lease transitions", () => {
+    expect(
+      transitionRunStatus(
+        db.adapter,
+        "missing-run",
+        undefined,
+        "failed",
+        Date.now() as UTCTimestamp,
+      ).ok,
+    ).toBe(false);
+    const run = createTestRun({ jobId, id: "owned-run" });
+    expect(createRun(db.adapter, run).ok).toBe(true);
+    expect(
+      claimRun(
+        db.adapter,
+        run.id,
+        "owner-a",
+        (Date.now() + 60_000) as UTCTimestamp,
+        Date.now() as UTCTimestamp,
+      ).ok,
+    ).toBe(true);
+    expect(
+      transitionRunStatus(db.adapter, run.id, "owner-b", "running", Date.now() as UTCTimestamp).ok,
+    ).toBe(false);
+    const expired = createTestRun({ jobId, id: "expired-run" });
+    expect(createRun(db.adapter, expired).ok).toBe(true);
+    expect(
+      claimRun(
+        db.adapter,
+        expired.id,
+        "owner-a",
+        (Date.now() - 1) as UTCTimestamp,
+        Date.now() as UTCTimestamp,
+      ).ok,
+    ).toBe(true);
+    const expiredResult = transitionRunStatus(
+      db.adapter,
+      expired.id,
+      "owner-a",
+      "running",
+      Date.now() as UTCTimestamp,
+    );
+    expect(!expiredResult.ok && expiredResult.error.code).toBe("RUN_LEASE_EXPIRED");
+  });
+
+  it("persists output and terminal transition fields", () => {
+    const run = createTestRun({ jobId, id: "output-run" });
+    expect(createRun(db.adapter, run).ok).toBe(true);
+    expect(
+      transitionRunStatus(db.adapter, run.id, undefined, "running", Date.now() as UTCTimestamp).ok,
+    ).toBe(true);
+    const finished = transitionRunStatus(
+      db.adapter,
+      run.id,
+      undefined,
+      "succeeded",
+      Date.now() as UTCTimestamp,
+      {
+        output: { summary: "done", truncated: true, totalBytes: 100, artifactPath: "/tmp/a" },
+        error: "late diagnostic",
+      },
+    );
+    expect(finished.ok).toBe(true);
+    expect(
+      db.adapter.get<{ output_truncated: number; error_message: string }>(
+        "SELECT output_truncated, error_message FROM job_runs WHERE id = ?",
+        run.id,
+      ),
+    ).toEqual({ output_truncated: 1, error_message: "late diagnostic" });
+  });
+
   it("should renew run lease", () => {
     const run = createTestRun({ jobId, status: "queued" });
     createRun(db.adapter, run);
@@ -354,6 +450,19 @@ describe("Run Repository", () => {
     if (!result.ok) return;
     expect(result.value.runs.length).toBe(2);
     expect(result.value.nextCursor).toBeDefined();
+    const page2 = listRuns(db.adapter, { cursor: result.value.nextCursor, limit: 2 });
+    expect(page2.ok && page2.value.runs.length).toBe(2);
+    const filtered = listRuns(db.adapter, {
+      jobId,
+      status: "queued",
+      cursor: "legacy-id",
+      limit: 2,
+    });
+    expect(filtered.ok).toBe(true);
+    expect(countRunsByStatus(db.adapter, "queued")).toBe(5);
+    expect(countRunningRuns(db.adapter)).toBe(0);
+    expect(listOwnedActiveRuns(db.adapter, "nobody")).toEqual([]);
+    expect(countStaleLeases(db.adapter, Date.now() as UTCTimestamp)).toBe(0);
   });
 });
 
@@ -382,6 +491,11 @@ describe("Approval Repository", () => {
     expect(active).toBeDefined();
     if (!active) return;
     expect(active.fingerprint).toBe(approval.fingerprint);
+  });
+
+  it("returns stable absence results for missing approvals", () => {
+    expect(getActiveApproval(db.adapter, "missing-job")).toBeUndefined();
+    expect(revokeApproval(db.adapter, "missing-job", Date.now() as UTCTimestamp).ok).toBe(false);
   });
 
   it("should revoke approval", () => {
@@ -481,6 +595,8 @@ describe("Instance Repository", () => {
     const threshold = (now + 120_000) as UTCTimestamp;
     const stale = getStaleInstances(db.adapter, threshold);
     expect(stale.length).toBe(0);
+    expect(isInstanceActive(db.adapter, "instance-1", now)).toBe(false);
+    expect(isInstanceActive(db.adapter, "missing", now)).toBe(false);
   });
 });
 
@@ -513,6 +629,37 @@ describe("Audit Repository", () => {
     expect(events.events.length).toBe(1);
     const firstEvent = events.events[0];
     if (firstEvent) expect(firstEvent.type).toBe("job.created");
+  });
+
+  it("filters audit events and accepts legacy cursors", () => {
+    const timestamp = Date.now() as UTCTimestamp;
+    expect(
+      appendAuditEvents(db.adapter, [
+        {
+          id: "audit-run",
+          type: "run.started",
+          timestamp,
+          entityId: "job-1",
+          entityId2: "run-1",
+          actor: "test",
+          payload: {},
+          message: "run",
+        },
+        {
+          id: "audit-job",
+          type: "job.created",
+          timestamp,
+          entityId: "job-1",
+          actor: "test",
+          payload: {},
+          message: "job",
+        },
+      ]).ok,
+    ).toBe(true);
+    expect(
+      listAuditEvents(db.adapter, { runId: "run-1", eventType: "run.started" }).events,
+    ).toHaveLength(1);
+    expect(listAuditEvents(db.adapter, { cursor: "legacy-id" }).events).toHaveLength(0);
   });
 
   it("should paginate audit events", () => {

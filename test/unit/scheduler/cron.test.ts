@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ChronosErrorCode } from "../../../src/domain/errors.js";
 import type { UTCTimestamp } from "../../../src/domain/job.js";
 import { createCronCalculator } from "../../../src/scheduler/cron.js";
+import { FALL_BACK_LONDON } from "../../fixtures/timezones.js";
 
 const calc = createCronCalculator();
 
@@ -85,6 +86,16 @@ describe("CronCalculator.nextAfter", () => {
     }
   });
 
+  it("rejects invalid timezones and iteration expressions", () => {
+    const invalidZone = calc.nextAfter("0 9 * * *", "Not/AZone", afterMs, 1);
+    expect(invalidZone.ok).toBe(false);
+    if (!invalidZone.ok) expect(invalidZone.error.code).toBe(ChronosErrorCode.TIMEZONE_INVALID);
+    const invalidExpression = calc.nextAfter("60 0 * * *", "UTC", afterMs, 1);
+    expect(invalidExpression.ok).toBe(false);
+    expect(calc.validate("60 0 * * *").ok).toBe(false);
+    expect(calc.nextAfter("0 9 * * *", "UTC", afterMs, 0)).toEqual({ ok: true, value: [] });
+  });
+
   it("handles timezone-aware cron", () => {
     // 9:00 AM America/New_York, which is 13:00 or 14:00 UTC depending on DST
     const result = calc.nextAfter("0 9 * * *", "America/New_York", afterMs, 1);
@@ -113,6 +124,20 @@ describe("CronCalculator DST deduplication", () => {
       const wallMinutes = result.value.map((o) => o.localWallMinute);
       const uniqueWallMinutes = new Set(wallMinutes);
       expect(uniqueWallMinutes.size).toBe(wallMinutes.length);
+    }
+  });
+
+  it("produces at most one London occurrence during fall back", () => {
+    const result = calc.nextAfter(
+      "0 1 * * *",
+      "Europe/London",
+      FALL_BACK_LONDON.midnight as UTCTimestamp,
+      10,
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const wallMinutes = result.value.map((occurrence) => occurrence.localWallMinute);
+      expect(new Set(wallMinutes).size).toBe(wallMinutes.length);
     }
   });
 

@@ -123,7 +123,10 @@ export function createTestJob(overrides: Partial<Job> = {}): Job {
     createdBy: overrides.createdBy ?? "test",
     updatedAt: overrides.updatedAt ?? now,
     updatedBy: overrides.updatedBy ?? "test",
-    nextRunAt: overrides.nextRunAt ?? ((now + 60_000) as UTCTimestamp),
+    nextRunAt:
+      overrides.nextRunAt === null
+        ? null
+        : (overrides.nextRunAt ?? ((now + 60_000) as UTCTimestamp)),
     consecutiveFailures: overrides.consecutiveFailures ?? 0,
   };
 }

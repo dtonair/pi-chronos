@@ -28,9 +28,42 @@ function tempDbPath(): { dir: string; path: string } {
 }
 
 describe("Migration Tests", () => {
-  it("should detect node:sqlite availability", () => {
+  it("should return a stable error for an unusable database path", () => {
+    const result = openDatabase(
+      { path: "/dev/null/chronos.db", create: true },
+      createMigrations([MIGRATION_SQL]),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("DATABASE_ERROR");
+  });
+
+  it("should detect node:sqlite availability and report unsupported runtimes", () => {
     const result = detectSQLite();
     expect(result.ok).toBe(true);
+    const unavailable = detectSQLite(() => undefined);
+    expect(unavailable.ok).toBe(false);
+    if (!unavailable.ok) expect(unavailable.error.code).toBe("SQLITE_UNAVAILABLE");
+  });
+
+  it("should reject an unknown already-applied migration version", () => {
+    const { dir, path } = tempDbPath();
+    try {
+      const first = openDatabase({ path, create: true }, createMigrations([MIGRATION_SQL]));
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      first.value.run(
+        "INSERT INTO schema_migrations (version, checksum, applied_at) VALUES (?, ?, ?)",
+        99,
+        "unknown",
+        new Date().toISOString(),
+      );
+      first.value.close();
+      const reopened = openDatabase({ path, create: true }, createMigrations([MIGRATION_SQL]));
+      expect(reopened.ok).toBe(false);
+      if (!reopened.ok) expect(reopened.error.code).toBe("MIGRATION_ERROR");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("should create a new database and apply migrations", () => {
@@ -42,6 +75,9 @@ describe("Migration Tests", () => {
       if (!result.ok) return;
       const db: DatabaseAdapter = result.value;
 
+      expect(db.permissionSemantics).toBe(
+        process.platform === "win32" ? "unsupported" : "enforced",
+      );
       expect(db.currentVersion).toBe(1);
 
       const tables = db.all<{ name: string }>(

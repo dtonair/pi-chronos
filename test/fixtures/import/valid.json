@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "jobs": [
+    {
+      "key": "daily-report",
+      "name": "Daily report",
+      "prompt": "Generate the report",
+      "model": "test/model",
+      "schedule": {
+        "kind": "interval",
+        "everyMs": 60000
+      }
+    }
+  ]
+}

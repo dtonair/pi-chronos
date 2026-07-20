@@ -11,10 +11,10 @@ export function utcKey(scheduledUtc: string): string {
   return scheduledUtc;
 }
 
-export function onceOccurrenceKey(schedule: OnceSchedule): string {
-  // once schedules have exactly one occurrence. The runAt is the key
-  // after normalization — normalize before calling this.
-  return `once:${schedule.runAt}`;
+export function onceOccurrenceKey(schedule: OnceSchedule, normalizedUtcIso?: string): string {
+  // Use the normalized UTC instant when available. This prevents equivalent
+  // offset-bearing and local representations from producing two runs.
+  return `once:${normalizedUtcIso ?? schedule.runAt}`;
 }
 
 export function intervalOccurrenceKey(schedule: IntervalSchedule, occurrenceIndex: number): string {
@@ -32,13 +32,14 @@ export function cronOccurrenceKey(schedule: CronSchedule, utcIso: string): strin
 export function occurrenceKeyFor(schedule: JobSchedule, occurrenceUtcIso: string): string {
   switch (schedule.kind) {
     case "once":
-      return onceOccurrenceKey(schedule);
+      return onceOccurrenceKey(schedule, occurrenceUtcIso);
     case "interval": {
       // Interval occurrence index is derived from the anchor and the occurrence time.
       // We compute it as: (occurrenceMs - anchorMs) / everyMs
       const occurrenceMs = new Date(occurrenceUtcIso).getTime();
-      const anchorMs =
-        schedule.anchorAt !== undefined ? new Date(schedule.anchorAt).getTime() : occurrenceMs;
+      if (schedule.anchorAt === undefined)
+        return `interval:${schedule.everyMs}:${occurrenceUtcIso}`;
+      const anchorMs = new Date(schedule.anchorAt).getTime();
       const index = Math.round((occurrenceMs - anchorMs) / schedule.everyMs);
       return intervalOccurrenceKey(schedule, index);
     }

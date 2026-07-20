@@ -90,6 +90,13 @@ describe("previewSchedule", () => {
       }
     });
 
+    it("formats short intervals and rejects invalid values", () => {
+      const short = previewSchedule({ kind: "interval", everyMs: 30 * 60_000 }, NOW, cronCalc, UTC);
+      expect(short.ok && short.value.schedule.description).toContain("minutes");
+      const invalid = previewSchedule({ kind: "interval", everyMs: 0 }, NOW, cronCalc, UTC);
+      expect(invalid.ok).toBe(false);
+    });
+
     it("handles daily intervals", () => {
       const result = previewSchedule({ kind: "interval", everyMs: 86_400_000 }, NOW, cronCalc, UTC);
       expect(result.ok).toBe(true);

@@ -140,6 +140,37 @@ describe("calculateNextRun", () => {
       expect(result.ok).toBe(false);
     });
 
+    it("returns none when a valid cron has no future occurrence", () => {
+      const noFuture = {
+        validate: (expression: string) => ({ ok: true, value: { expression, valid: true } }),
+        nextAfter: () => ({ ok: true, value: [] }),
+      } as never;
+      const result = calculateNextRun(
+        { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+        NOW,
+        false,
+        noFuture,
+      );
+      expect(result).toEqual({
+        ok: true,
+        value: { kind: "none", reason: "No future cron occurrences" },
+      });
+    });
+
+    it("propagates a cron calculator failure", () => {
+      const failed = {
+        validate: () => ({ ok: false, error: { code: "INVALID_SCHEDULE", message: "bad" } }),
+        nextAfter: () => ({ ok: false, error: { code: "INVALID_SCHEDULE", message: "bad" } }),
+      } as never;
+      const result = calculateNextRun(
+        { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+        NOW,
+        false,
+        failed,
+      );
+      expect(result.ok).toBe(false);
+    });
+
     it("handles timezone-specific cron", () => {
       const result = calculateNextRun(
         { kind: "cron", expression: "0 9 * * *", timezone: "America/New_York" },

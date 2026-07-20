@@ -113,6 +113,22 @@ describe("normalizeOnce", () => {
 
   // ── Malformed input ───────────────────────────────────────
 
+  it("rejects invalid timezone and offset timestamps", () => {
+    expect(
+      normalizeOnce(
+        { kind: "once", runAt: "2026-09-01T00:00:00Z", timezone: "Not/AZone" },
+        NOW_MS,
+        false,
+      ).ok,
+    ).toBe(false);
+    expect(
+      normalizeOnce({ kind: "once", runAt: "2026-09-01T00:00:00+99:99" }, NOW_MS, false).ok,
+    ).toBe(false);
+    expect(
+      normalizeOnce({ kind: "once", runAt: "not-a-date", timezone: "UTC" }, NOW_MS, false).ok,
+    ).toBe(false);
+  });
+
   it("rejects a malformed timestamp", () => {
     const result = normalizeOnce({ kind: "once", runAt: "not-a-date" }, NOW_MS, false);
     expect(result.ok).toBe(false);

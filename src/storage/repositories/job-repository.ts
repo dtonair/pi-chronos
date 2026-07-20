@@ -5,11 +5,12 @@
 
 import { ChronosError, ChronosErrorCode } from "../../domain/errors.js";
 import type { Job, JobScope, JobStatus, UTCTimestamp } from "../../domain/job.js";
+import { computeJobFingerprint } from "../../security/job-fingerprint.js";
 import type { Result } from "../../shared/result.js";
 import { err, ok } from "../../shared/result.js";
 import { decodeJobRow, encodeJobRow, type JobRow } from "../codecs.js";
 import type { DatabaseAdapter } from "../database.js";
-import { inTransaction } from "../transaction.js";
+import { inImmediateTransaction, inTransaction } from "../transaction.js";
 
 // ─── Create ──────────────────────────────────
 
@@ -34,20 +35,21 @@ export function createJob(adapter: DatabaseAdapter, job: Job): Result<Job> {
 
     const row = encodeJobRow(job);
     adapter.run(
-      `INSERT INTO jobs (id, schema_version, name, normalized_name, description, prompt,
+      `INSERT INTO jobs (id, schema_version, name, normalized_name, description, prompt, tags_json,
         status, scope, scope_key, source, import_key,
         schedule_json, execution_json, permissions_json,
         approval_required, approved_fingerprint,
         next_run_at, last_scheduled_at, last_run_at, last_success_at,
         consecutive_failures, diagnostic_code, diagnostic_message,
         created_at, created_by, updated_at, updated_by, revision)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       row.id,
       row.schema_version,
       row.name,
       row.normalized_name,
       row.description,
       row.prompt,
+      row.tags_json,
       row.status,
       row.scope,
       row.scope_key,
@@ -82,7 +84,11 @@ export function getJobById(adapter: DatabaseAdapter, id: string): Result<Job | u
   if (row === undefined) return ok(undefined);
   const result = decodeJobRow(row);
   if (!result.ok) return result;
-  return ok(result.value);
+  const job = result.value;
+  hydrateApprovalTimestamp(adapter, job);
+  // Compute current fingerprint from definition (not stored in DB)
+  job.fingerprint = computeJobFingerprint(job.definition);
+  return ok(job);
 }
 
 // ─── List with keyset pagination ────────────
@@ -139,7 +145,10 @@ export function listJobs(
   for (const row of pageRows) {
     const result = decodeJobRow(row);
     if (!result.ok) return result;
-    jobs.push(result.value);
+    const job = result.value;
+    hydrateApprovalTimestamp(adapter, job);
+    job.fingerprint = computeJobFingerprint(job.definition);
+    jobs.push(job);
   }
 
   const nextCursor = hasMore ? pageRows[pageRows.length - 1]?.id : undefined;
@@ -189,7 +198,7 @@ export function updateJob(
 
     const updateResult = adapter.run(
       `UPDATE jobs SET
-        name = ?, normalized_name = ?, description = ?, prompt = ?,
+        name = ?, normalized_name = ?, description = ?, prompt = ?, tags_json = ?,
         status = ?, scope = ?, scope_key = ?, source = ?, import_key = ?,
         schedule_json = ?, execution_json = ?, permissions_json = ?,
         approval_required = ?, approved_fingerprint = ?,
@@ -201,6 +210,7 @@ export function updateJob(
       row.normalized_name,
       row.description,
       row.prompt,
+      row.tags_json,
       row.status,
       row.scope,
       row.scope_key,
@@ -236,7 +246,56 @@ export function updateJob(
     }
 
     const finalJob = { ...updated.value, revision: newRevision };
+    hydrateApprovalTimestamp(adapter, finalJob);
     return ok(finalJob);
+  });
+}
+
+/** Permanently remove a job after an expected-revision check. Audit rows retain
+ * the deletion record; related runs and approvals follow their foreign keys. */
+export function deleteJob(
+  adapter: DatabaseAdapter,
+  id: string,
+  expectedRevision: number,
+): Result<void> {
+  return inImmediateTransaction(adapter, () => {
+    const existing = adapter.get<{ revision: number }>(
+      "SELECT revision FROM jobs WHERE id = ?",
+      id,
+    );
+    if (existing === undefined) {
+      return err(
+        new ChronosError({
+          code: ChronosErrorCode.JOB_NOT_FOUND,
+          message: `Job not found: ${id}`,
+          entity: id,
+        }),
+      );
+    }
+    if (existing.revision !== expectedRevision) {
+      return err(
+        new ChronosError({
+          code: ChronosErrorCode.REVISION_CONFLICT,
+          message: `Revision conflict for job ${id}`,
+          entity: id,
+          meta: { expected: expectedRevision, actual: existing.revision },
+        }),
+      );
+    }
+    const deleted = adapter.run(
+      "DELETE FROM jobs WHERE id = ? AND revision = ?",
+      id,
+      expectedRevision,
+    );
+    return deleted.changes === 1
+      ? ok(undefined)
+      : err(
+          new ChronosError({
+            code: ChronosErrorCode.REVISION_CONFLICT,
+            message: `Job ${id} changed before deletion`,
+            entity: id,
+          }),
+        );
   });
 }
 
@@ -249,11 +308,16 @@ export function transitionJobStatus(
   newStatus: JobStatus,
   updatedBy: string,
   updatedAt: UTCTimestamp,
+  diagnostic?: { code: string; message: string },
 ): Result<Job> {
   return updateJob(adapter, id, expectedRevision, (job) => {
     job.status = newStatus;
     job.updatedAt = updatedAt;
     job.updatedBy = updatedBy;
+    if (diagnostic !== undefined) {
+      job.diagnosticCode = diagnostic.code;
+      job.diagnosticMessage = diagnostic.message;
+    }
     return ok(job);
   });
 }
@@ -264,11 +328,12 @@ export function updateJobNextRun(
   adapter: DatabaseAdapter,
   id: string,
   nextRunAt: UTCTimestamp | null,
+  updatedAt: UTCTimestamp = Date.now() as UTCTimestamp,
 ): Result<void> {
   adapter.run(
     "UPDATE jobs SET next_run_at = ?, last_scheduled_at = ? WHERE id = ?",
     nextRunAt !== null ? new Date(nextRunAt).toISOString() : null,
-    new Date(Date.now()).toISOString(),
+    new Date(updatedAt).toISOString(),
     id,
   );
   return ok(undefined);
@@ -292,7 +357,7 @@ export function updateJobRunCounters(
        WHERE id = ?`,
       new Date(runTimestamp).toISOString(),
       new Date(runTimestamp).toISOString(),
-      new Date(Date.now()).toISOString(),
+      new Date(runTimestamp).toISOString(),
       id,
     );
   } else {
@@ -303,7 +368,7 @@ export function updateJobRunCounters(
         updated_at = ?
        WHERE id = ?`,
       new Date(runTimestamp).toISOString(),
-      new Date(Date.now()).toISOString(),
+      new Date(runTimestamp).toISOString(),
       id,
     );
   }
@@ -328,10 +393,32 @@ export function getDueJobs(adapter: DatabaseAdapter, now: UTCTimestamp, limit: n
   const jobs: Job[] = [];
   for (const row of rows) {
     const result = decodeJobRow(row);
-    if (result.ok) jobs.push(result.value);
+    if (result.ok) {
+      const job = result.value;
+      hydrateApprovalTimestamp(adapter, job);
+      job.fingerprint = computeJobFingerprint(job.definition);
+      jobs.push(job);
+    }
     // Malformed rows are silently skipped; they will remain as corrupt diagnostics
   }
   return jobs;
+}
+
+function hydrateApprovalTimestamp(adapter: DatabaseAdapter, job: Job): void {
+  if (job.approvedFingerprint === undefined) {
+    job.approvedAt = undefined;
+    return;
+  }
+  const row = adapter.get<{ approved_at: string }>(
+    `SELECT approved_at FROM job_approvals
+     WHERE job_id = ? AND fingerprint = ? AND revoked_at IS NULL
+     ORDER BY approved_at DESC LIMIT 1`,
+    job.id,
+    job.approvedFingerprint,
+  );
+  const timestamp = row === undefined ? undefined : Date.parse(row.approved_at);
+  job.approvedAt =
+    timestamp === undefined || Number.isNaN(timestamp) ? undefined : (timestamp as UTCTimestamp);
 }
 
 // ─── Count jobs by status ──────────────────

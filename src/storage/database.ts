@@ -5,17 +5,38 @@
  * creates the containing directory with user-private modes on POSIX,
  * and exposes explicit transaction boundaries.
  */
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname } from "node:path";
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { ChronosError, ChronosErrorCode } from "../domain/errors.js";
 import type { Result } from "../shared/result.js";
 import { err, ok } from "../shared/result.js";
 import { loadMigrations, type MigrationRecord } from "./migrations.js";
 
+export type PermissionSemantics = "enforced" | "unsupported";
+
+type DatabaseSyncConstructor = new (
+  path: string,
+  options?: { open?: boolean; readOnly?: boolean },
+) => DatabaseSync;
+
+const require = createRequire(import.meta.url);
+
+function loadDatabaseSync(): DatabaseSyncConstructor | undefined {
+  try {
+    const sqlite = require("node:sqlite") as { DatabaseSync?: DatabaseSyncConstructor };
+    return sqlite.DatabaseSync;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface DatabaseAdapter {
   readonly db: DatabaseSync;
   readonly path: string;
+  /** Whether user-private filesystem modes were enforced or could not be verified. */
+  readonly permissionSemantics: PermissionSemantics;
 
   /** Run a query that returns rows. */
   all<T = Record<string, unknown>>(sql: string, ...params: SQLInputValue[]): T[];
@@ -44,6 +65,9 @@ export interface DatabaseAdapter {
   /** Close the database. */
   close(): void;
 
+  /** Current transaction nesting depth for scoped nested transactions. */
+  readonly transactionDepth?: number;
+
   /** Migration state. */
   readonly currentVersion: number;
   readonly migrations: readonly MigrationRecord[];
@@ -51,20 +75,16 @@ export interface DatabaseAdapter {
 
 /**
  * Feature-detect node:sqlite synchronous API.
- * Throws ChronosError(SQLITE_UNAVAILABLE) if not available.
+ * Returns ChronosError(SQLITE_UNAVAILABLE) if not available.
  */
-export function detectSQLite(): Result<void> {
-  try {
-    void DatabaseSync;
-    return ok(undefined);
-  } catch {
-    return err(
-      new ChronosError({
-        code: ChronosErrorCode.SQLITE_UNAVAILABLE,
-        message: "node:sqlite (DatabaseSync) is not available in this Node.js runtime",
-      }),
-    );
-  }
+export function detectSQLite(loader: () => unknown = loadDatabaseSync): Result<void> {
+  if (loader()) return ok(undefined);
+  return err(
+    new ChronosError({
+      code: ChronosErrorCode.SQLITE_UNAVAILABLE,
+      message: "node:sqlite (DatabaseSync) is not available in this Node.js runtime",
+    }),
+  );
 }
 
 export interface OpenDatabaseOptions {
@@ -82,33 +102,49 @@ export function openDatabase(
   options: OpenDatabaseOptions,
   migrations: readonly MigrationRecord[],
 ): Result<DatabaseAdapter> {
-  const detectResult = detectSQLite();
-  if (!detectResult.ok) return detectResult;
+  const DatabaseSync = loadDatabaseSync();
+  if (!DatabaseSync) {
+    return err(
+      new ChronosError({
+        code: ChronosErrorCode.SQLITE_UNAVAILABLE,
+        message: "node:sqlite (DatabaseSync) is not available in this Node.js runtime",
+      }),
+    );
+  }
 
   const { path, readOnly = false } = options;
 
-  // Ensure containing directory exists with user-private modes on POSIX
+  // Ensure containing directory exists with user-private modes on POSIX.
+  // Keep the result explicit: callers must not claim private storage when the
+  // host cannot enforce or verify these semantics.
   const parentDir = dirname(path);
+  let permissionSemantics: PermissionSemantics =
+    process.platform === "win32" ? "unsupported" : "enforced";
   try {
     mkdirSync(parentDir, { recursive: true, mode: 0o700 });
+    if (permissionSemantics === "enforced") {
+      chmodSync(parentDir, 0o700);
+      if ((statSync(parentDir).mode & 0o077) !== 0) permissionSemantics = "unsupported";
+    }
   } catch (_cause) {
-    // Non-fatal: we'll still try to open the database.
-    // The SQLite open will fail if the directory truly cannot be used.
+    permissionSemantics = "unsupported";
   }
 
   let db: DatabaseSync;
   try {
     db = new DatabaseSync(path, { open: !readOnly, readOnly });
-    // Enforce user-private file permissions where supported (POSIX only)
-    try {
-      chmodSync(path, 0o600);
-    } catch {
-      // Non-fatal on platforms that don't support chmod
-    }
   } catch (cause) {
     return err(
       ChronosError.wrap(ChronosErrorCode.DATABASE_ERROR, `Failed to open database: ${path}`, cause),
     );
+  }
+  if (permissionSemantics === "enforced") {
+    try {
+      chmodSync(path, 0o600);
+      if ((statSync(path).mode & 0o077) !== 0) permissionSemantics = "unsupported";
+    } catch {
+      permissionSemantics = "unsupported";
+    }
   }
 
   try {
@@ -134,12 +170,17 @@ export function openDatabase(
     }
 
     const currentVersion = migrationResult.value;
+    let transactionDepth = 0;
 
     const adapter: DatabaseAdapter = {
       db,
       path,
+      permissionSemantics,
       currentVersion,
       migrations,
+      get transactionDepth() {
+        return transactionDepth;
+      },
 
       all<T = Record<string, unknown>>(sql: string, ...params: SQLInputValue[]): T[] {
         const stmt = db.prepare(sql);
@@ -163,18 +204,22 @@ export function openDatabase(
 
       begin(): void {
         db.exec("BEGIN DEFERRED");
+        transactionDepth += 1;
       },
 
       beginImmediate(): void {
         db.exec("BEGIN IMMEDIATE");
+        transactionDepth += 1;
       },
 
       commit(): void {
         db.exec("COMMIT");
+        transactionDepth = Math.max(0, transactionDepth - 1);
       },
 
       rollback(): void {
         db.exec("ROLLBACK");
+        transactionDepth = 0;
       },
 
       close(): void {

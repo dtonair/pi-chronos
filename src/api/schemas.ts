@@ -283,6 +283,21 @@ export const SchedulerHealthSchema = Type.Object(
     activeJobs: Type.Integer({ minimum: 0 }),
     pendingApprovalJobs: Type.Integer({ minimum: 0 }),
     runningRuns: Type.Integer({ minimum: 0 }),
+    metrics: Type.Optional(
+      Type.Object(
+        {
+          wakes: Type.Integer({ minimum: 0 }),
+          dispatches: Type.Integer({ minimum: 0 }),
+          queuedRuns: Type.Integer({ minimum: 0 }),
+          succeeded: Type.Integer({ minimum: 0 }),
+          failed: Type.Integer({ minimum: 0 }),
+          skipped: Type.Integer({ minimum: 0 }),
+          abandoned: Type.Integer({ minimum: 0 }),
+          policyDenials: Type.Integer({ minimum: 0 }),
+        },
+        { additionalProperties: false },
+      ),
+    ),
     lastSchedulerError: Type.Optional(
       Type.Object(
         {
@@ -370,6 +385,7 @@ export const RunMetadataSchema = Type.Object(
     missedCount: Type.Optional(Type.Integer({ minimum: 1 })),
     model: Type.Optional(Type.String()),
     stopReason: Type.Optional(Type.String()),
+    outputTotalBytes: Type.Optional(Type.Integer({ minimum: 0 })),
     toolActivity: Type.Optional(Type.Array(Type.String(), { maxItems: 1_000 })),
   },
   { additionalProperties: false },
@@ -383,6 +399,7 @@ export const JobRowSchema = Type.Object(
     normalized_name: Type.String(),
     description: nullable(Type.String()),
     prompt: Type.String(),
+    tags_json: Type.String(),
     status: JobStatusSchema,
     scope: JobScopeSchema,
     scope_key: Type.String(),
@@ -613,8 +630,8 @@ const ACTION_REQUIRED: Record<SchedulerActionName, readonly string[]> = {
   run_now: ["jobId"],
   cancel_run: ["runId"],
   history: ["jobId"],
-  approve: ["jobId", "confirmationToken"],
-  revoke_approval: ["jobId", "confirmationToken"],
+  approve: ["jobId"],
+  revoke_approval: ["jobId"],
   import: [],
   health: [],
 };
@@ -639,10 +656,10 @@ const ACTION_ALLOWED: Record<SchedulerActionName, ReadonlySet<string>> = {
   get: new Set(["action", "jobId"]),
   list: new Set(["action", "scope", "cursor", "limit"]),
   update: new Set(["action", "jobId", "expectedRevision", "patch"]),
-  pause: new Set(["action", "jobId"]),
-  resume: new Set(["action", "jobId"]),
-  archive: new Set(["action", "jobId"]),
-  delete: new Set(["action", "jobId"]),
+  pause: new Set(["action", "jobId", "expectedRevision"]),
+  resume: new Set(["action", "jobId", "expectedRevision"]),
+  archive: new Set(["action", "jobId", "expectedRevision"]),
+  delete: new Set(["action", "jobId", "expectedRevision"]),
   run_now: new Set(["action", "jobId", "overridePaused"]),
   cancel_run: new Set(["action", "runId"]),
   history: new Set(["action", "jobId", "cursor", "limit"]),
@@ -702,6 +719,18 @@ export function decodeImportFile(value: unknown, minimumIntervalMs = 60_000): Re
     if (scheduleError !== undefined) return err(scheduleError);
     const permissionError = permissionSemanticError(job.permissions);
     if (permissionError !== undefined) return err(permissionError);
+    const environment = job.execution?.environment;
+    if (
+      environment !== undefined &&
+      (Object.keys(environment.values).length > 0 || environment.secretNames.length > 0)
+    ) {
+      return err(
+        new ChronosError({
+          code: ChronosErrorCode.IMPORT_ERROR,
+          message: "Project imports cannot contain environment values or secret references",
+        }),
+      );
+    }
   }
   return ok(file);
 }

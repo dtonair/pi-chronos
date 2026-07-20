@@ -48,6 +48,8 @@ export interface Logger {
   error(msg: string, data?: Record<string, unknown>): void;
   /** The minimum level emitted. */
   readonly level: LogLevel;
+  /** Most recent write failure, if observability degraded. */
+  readonly lastError?: { message: string; timestamp: UTCTimestamp };
 }
 
 // ─── Event Sink ─────────────────

@@ -47,6 +47,7 @@ function localWallMinute(utcMs: number, timezone: string): string {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
+    hourCycle: "h23",
   });
   const parts = fmt.formatToParts(new Date(utcMs));
   const map: Record<string, string> = {};
@@ -92,6 +93,17 @@ export function createCronCalculator(): CronCalculator {
       afterMs: UTCTimestamp,
       count: number,
     ): Result<CronOccurrence[]> {
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(0);
+      } catch {
+        return err(
+          new ChronosError({
+            code: ChronosErrorCode.TIMEZONE_INVALID,
+            message: `Invalid IANA timezone: ${timezone}`,
+            entity: timezone,
+          }),
+        );
+      }
       try {
         const currentDate = isoDate(afterMs);
         const parsed = CronExpressionParser.parse(expression, {

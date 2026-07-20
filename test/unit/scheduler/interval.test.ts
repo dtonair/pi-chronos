@@ -99,6 +99,30 @@ describe("nextIntervalOccurrence", () => {
   });
 });
 
+describe("interval arithmetic property checks", () => {
+  it("matches a bounded reference for generated anchors and intervals", () => {
+    let seed = 0x1234_5678;
+    const nextRandom = () => {
+      seed = (seed * 1_664_525 + 1_013_904_223) >>> 0;
+      return seed / 0x1_0000_0000;
+    };
+    for (let sample = 0; sample < 500; sample += 1) {
+      const anchorMs = (FIXED_ANCHOR_MS + Math.floor(nextRandom() * 10_000_000)) as UTCTimestamp;
+      const intervalMs = 1 + Math.floor(nextRandom() * 1_000_000);
+      const afterMs = (anchorMs - 2_000_000 + Math.floor(nextRandom() * 6_000_000)) as UTCTimestamp;
+      const actual = nextIntervalOccurrence(
+        { anchorMs, anchorAt: new Date(anchorMs).toISOString(), supplied: true },
+        intervalMs,
+        afterMs,
+      );
+      let expectedIndex = 0;
+      while (anchorMs + expectedIndex * intervalMs <= afterMs) expectedIndex += 1;
+      expect(actual.index).toBe(expectedIndex);
+      expect(actual.occurrenceMs).toBe(anchorMs + expectedIndex * intervalMs);
+    }
+  });
+});
+
 describe("missedIntervalOccurrences", () => {
   const anchor = {
     anchorMs: FIXED_ANCHOR_MS,

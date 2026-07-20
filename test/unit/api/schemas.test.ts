@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { Value } from "typebox/value";
 import { describe, expect, it } from "vitest";
 import {
@@ -184,18 +185,10 @@ describe("scheduler action validation", () => {
 
 describe("import validation", () => {
   it("accepts a strict versioned import with an explicit model", () => {
-    const result = decodeImportFile({
-      version: 1,
-      jobs: [
-        {
-          key: "daily-report",
-          name: "Daily report",
-          prompt: "Generate report",
-          schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
-          model: "anthropic/claude-sonnet-4-5",
-        },
-      ],
-    });
+    const fixture = JSON.parse(
+      readFileSync(new URL("../../fixtures/import/valid.json", import.meta.url), "utf8"),
+    );
+    const result = decodeImportFile(fixture);
     expect(result.ok).toBe(true);
   });
 

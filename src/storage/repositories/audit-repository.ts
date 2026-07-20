@@ -2,6 +2,7 @@
  * Audit event repository with append-only persistence and paginated retrieval.
  */
 
+import { Buffer } from "node:buffer";
 import type { AuditEvent, AuditEventType } from "../../domain/audit.js";
 import type { Result } from "../../shared/result.js";
 import { ok } from "../../shared/result.js";
@@ -71,8 +72,14 @@ export function listAuditEvents(adapter: DatabaseAdapter, options: AuditOptions)
     params.push(options.eventType);
   }
   if (options.cursor !== undefined) {
-    clauses.push("id > ?");
-    params.push(options.cursor);
+    const cursor = decodeAuditCursor(options.cursor);
+    if (cursor === undefined) {
+      clauses.push("id > ?");
+      params.push(options.cursor);
+    } else {
+      clauses.push("(timestamp < ? OR (timestamp = ? AND id > ?))");
+      params.push(cursor.timestamp, cursor.timestamp, cursor.id);
+    }
   }
 
   const whereClause = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
@@ -86,6 +93,28 @@ export function listAuditEvents(adapter: DatabaseAdapter, options: AuditOptions)
   const pageRows = hasMore ? rows.slice(0, limit) : rows;
 
   const events = pageRows.map((row) => decodeAuditRow(row));
-  const nextCursor = hasMore ? pageRows[pageRows.length - 1]?.id : undefined;
+  const last = pageRows[pageRows.length - 1];
+  const nextCursor =
+    hasMore && last
+      ? Buffer.from(JSON.stringify({ timestamp: last.timestamp, id: last.id }), "utf8").toString(
+          "base64url",
+        )
+      : undefined;
   return { events, nextCursor };
+}
+
+function decodeAuditCursor(value: string): { timestamp: string; id: string } | undefined {
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as { timestamp?: unknown }).timestamp === "string" &&
+      typeof (parsed as { id?: unknown }).id === "string"
+    )
+      return parsed as { timestamp: string; id: string };
+  } catch {
+    // Accept legacy id-only cursors below.
+  }
+  return undefined;
 }

@@ -24,6 +24,7 @@ export interface JobRow {
   normalized_name: string;
   description: string | null;
   prompt: string;
+  tags_json: string;
   status: string;
   scope: string;
   scope_key: string;
@@ -107,6 +108,50 @@ export interface AuditRow {
 
 // ─── Helpers ──────────────────
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isScheduleValue(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.kind !== "string") return false;
+  if (value.kind === "once") return typeof value.runAt === "string";
+  if (value.kind === "interval") {
+    return (
+      typeof value.everyMs === "number" && Number.isInteger(value.everyMs) && value.everyMs > 0
+    );
+  }
+  return (
+    value.kind === "cron" &&
+    typeof value.expression === "string" &&
+    typeof value.timezone === "string"
+  );
+}
+
+function isPermissionsValue(value: unknown): value is JobPermissions {
+  if (!isRecord(value)) return false;
+  const shell = value.shell;
+  const filesystem = value.filesystem;
+  const network = value.network;
+  const extensions = value.extensions;
+  const secrets = value.secrets;
+  return (
+    Array.isArray(value.tools) &&
+    isRecord(shell) &&
+    typeof shell.allowed === "boolean" &&
+    Array.isArray(shell.commands) &&
+    isRecord(filesystem) &&
+    Array.isArray(filesystem.readPaths) &&
+    Array.isArray(filesystem.writePaths) &&
+    isRecord(network) &&
+    typeof network.allowed === "boolean" &&
+    Array.isArray(network.domains) &&
+    isRecord(extensions) &&
+    Array.isArray(extensions.allowedIds) &&
+    isRecord(secrets) &&
+    Array.isArray(secrets.allowedNames)
+  );
+}
+
 function parseTimestamp(iso: string | null): UTCTimestamp | null {
   if (iso === null || iso === undefined) return null;
   const ms = Date.parse(iso);
@@ -141,10 +186,38 @@ export function decodeJobRow(row: JobRow): Result<Job> {
     );
   }
 
+  let tags: string[];
+  try {
+    const parsedTags: unknown = JSON.parse(row.tags_json);
+    if (
+      !Array.isArray(parsedTags) ||
+      parsedTags.length > 50 ||
+      !parsedTags.every((tag) => typeof tag === "string" && tag.length <= 100)
+    )
+      throw new Error("tags must be bounded strings");
+    tags = parsedTags;
+  } catch {
+    return err(
+      new ChronosError({
+        code: ChronosErrorCode.DB_CORRUPT_ROW,
+        message: "Job tags_json is malformed",
+        meta: { id: row.id },
+      }),
+    );
+  }
+
   // Parse schedule JSON
   let scheduleJson: { value: Record<string, unknown> };
   try {
-    scheduleJson = JSON.parse(row.schedule_json) as { value: Record<string, unknown> };
+    const parsed: unknown = JSON.parse(row.schedule_json);
+    if (
+      !isRecord(parsed) ||
+      parsed.schemaVersion !== 1 ||
+      !isRecord(parsed.value) ||
+      !isScheduleValue(parsed.value)
+    )
+      throw new Error("invalid persisted schedule");
+    scheduleJson = parsed as { value: Record<string, unknown> };
   } catch {
     return err(
       new ChronosError({
@@ -168,7 +241,26 @@ export function decodeJobRow(row: JobRow): Result<Job> {
     environment: { values: Record<string, string>; secretNames: string[] };
   };
   try {
-    executionJson = JSON.parse(row.execution_json);
+    const parsed: unknown = JSON.parse(row.execution_json);
+    if (
+      !isRecord(parsed) ||
+      parsed.schemaVersion !== 1 ||
+      typeof parsed.model !== "string" ||
+      parsed.mode !== "subagent" ||
+      typeof parsed.workingDirectory !== "string" ||
+      typeof parsed.timeoutMs !== "number" ||
+      typeof parsed.maxOutputBytes !== "number" ||
+      parsed.overlapPolicy !== "skip" ||
+      (parsed.missedRunPolicy !== "skip" && parsed.missedRunPolicy !== "run_once") ||
+      typeof parsed.sandboxRequired !== "boolean" ||
+      !isRecord(parsed.environment) ||
+      !isRecord(parsed.environment.values) ||
+      !Object.values(parsed.environment.values).every((value) => typeof value === "string") ||
+      !Array.isArray(parsed.environment.secretNames) ||
+      !parsed.environment.secretNames.every((name) => typeof name === "string")
+    )
+      throw new Error("invalid persisted execution");
+    executionJson = parsed as typeof executionJson;
   } catch {
     return err(
       new ChronosError({
@@ -182,7 +274,10 @@ export function decodeJobRow(row: JobRow): Result<Job> {
   // Parse permissions JSON
   let permissionsParsed: { value: JobPermissions };
   try {
-    permissionsParsed = JSON.parse(row.permissions_json) as { value: JobPermissions };
+    const parsed: unknown = JSON.parse(row.permissions_json);
+    if (!isRecord(parsed) || parsed.schemaVersion !== 1 || !isPermissionsValue(parsed.value))
+      throw new Error("invalid persisted permissions");
+    permissionsParsed = parsed as { value: JobPermissions };
   } catch {
     return err(
       new ChronosError({
@@ -200,7 +295,7 @@ export function decodeJobRow(row: JobRow): Result<Job> {
     definition: {
       name: row.name,
       description: row.description ?? undefined,
-      tags: [],
+      tags,
       prompt: row.prompt,
       schedule: scheduleJson.value as unknown as Job["definition"]["schedule"],
       model: executionJson.model,
@@ -271,6 +366,7 @@ export function encodeJobRow(job: Job): JobRow {
     normalized_name: job.definition.name.toLowerCase(),
     description: job.definition.description ?? null,
     prompt: job.definition.prompt,
+    tags_json: JSON.stringify(job.definition.tags),
     status: job.status,
     scope: job.definition.identity.scope,
     scope_key: job.definition.identity.scopeKey,
@@ -331,7 +427,7 @@ export function decodeRunRow(row: RunRow): Result<Run> {
     jobId: row.job_id,
     occurrenceKey: row.occurrence_key,
     occurrenceAt: scheduledAt,
-    jobRevision: 0, // populated from metadata or separate query
+    jobRevision: typeof metadata.jobRevision === "number" ? metadata.jobRevision : 0,
     status: row.status as RunStatus,
     trigger: row.trigger as "scheduled" | "manual",
     timing: {
@@ -347,8 +443,13 @@ export function decodeRunRow(row: RunRow): Result<Run> {
         ? {
             summary: row.output_summary,
             truncated: row.output_truncated === 1,
-            totalBytes: 0,
+            totalBytes:
+              typeof metadata.outputTotalBytes === "number" ? metadata.outputTotalBytes : 0,
             artifactPath: row.output_location ?? undefined,
+            stopReason: typeof metadata.stopReason === "string" ? metadata.stopReason : undefined,
+            toolActivity: Array.isArray(metadata.toolActivity)
+              ? metadata.toolActivity.filter((item): item is string => typeof item === "string")
+              : undefined,
           }
         : undefined,
     skipReason: undefined, // populated from metadata
@@ -369,11 +470,16 @@ export function decodeRunRow(row: RunRow): Result<Run> {
 
 export function encodeRunRow(run: Run): RunRow {
   const metadata: Record<string, unknown> = {};
+  metadata.jobRevision = run.jobRevision;
   if (run.catchUpFirst !== undefined)
     metadata.firstMissedAt = new Date(run.catchUpFirst).toISOString();
   if (run.catchUpLast !== undefined)
     metadata.lastMissedAt = new Date(run.catchUpLast).toISOString();
   if (run.catchUpCount !== undefined) metadata.missedCount = run.catchUpCount;
+  if (run.output?.totalBytes !== undefined) metadata.outputTotalBytes = run.output.totalBytes;
+  if (run.output?.stopReason !== undefined) metadata.stopReason = run.output.stopReason;
+  if (run.output?.toolActivity !== undefined)
+    metadata.toolActivity = run.output.toolActivity.slice(0, 1_000);
 
   return {
     id: run.id,
