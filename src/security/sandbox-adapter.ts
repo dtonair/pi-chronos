@@ -54,24 +54,50 @@ function quoteSbplPath(path: string): string {
   return `"${path.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
+/** Shared profile published by pi-seatbelt-sandbox for other trusted extensions. */
+export const PI_SEATBELT_PROFILE_ENV = "PI_SEATBELT_PROFILE";
+
 /**
  * Use Apple's built-in sandbox-exec when present. Linux/Windows deliberately
  * remain unavailable unless a separately reviewed adapter is supplied.
+ *
+ * When pi-seatbelt-sandbox publishes its active profile, reuse that profile
+ * unchanged. This keeps one user-controlled OS boundary: Chronos cannot widen
+ * it and does not impose a second network/filesystem policy. Chronos' separate
+ * approval-bound tool and canonical-path guard remains active inside the child.
  * The adapter never invokes a shell; sandbox-exec receives argv directly.
  */
 export function createPlatformSandboxAdapter(
   platform: NodeJS.Platform = process.platform,
   executablePath = "/usr/bin/sandbox-exec",
   probe = true,
+  getSharedProfile: () => string | undefined = () => process.env[PI_SEATBELT_PROFILE_ENV],
 ): SandboxAdapter {
-  const supported =
+  const locallySupported =
     platform === "darwin" &&
     canExecute(executablePath) &&
     (!probe || canApplySandbox(executablePath));
+  const sharedProfile = (): string | undefined => {
+    if (platform !== "darwin" || !canExecute(executablePath)) return undefined;
+    const path = getSharedProfile();
+    return path !== undefined && path.length > 0 && canRead(path) ? path : undefined;
+  };
   return {
-    supported,
+    get supported() {
+      return sharedProfile() !== undefined || locallySupported;
+    },
     async initialize(options): Promise<Result<SandboxHandle>> {
-      if (!supported) return unavailable();
+      const profilePath = sharedProfile();
+      if (profilePath !== undefined) {
+        return ok({
+          wrapExecutable: (executable, args) => ({
+            executable: executablePath,
+            args: ["-f", profilePath, "--", executable, ...args],
+          }),
+          close: async () => undefined,
+        });
+      }
+      if (!locallySupported) return unavailable();
       const readPaths = [options.workingDirectory, ...(options.readPaths ?? [])];
       const writePaths = options.readOnly
         ? []
@@ -121,6 +147,15 @@ function canApplySandbox(path: string): boolean {
 function canExecute(path: string): boolean {
   try {
     accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function canRead(path: string): boolean {
+  try {
+    accessSync(path, constants.R_OK);
     return true;
   } catch {
     return false;
