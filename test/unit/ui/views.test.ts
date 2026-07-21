@@ -11,13 +11,14 @@ describe("TUI presentation adapters", () => {
   it("renders jobs, details, runs, and health without side effects", () => {
     const job = createTestJob({ id: "ui-job", nextRunAt: null });
     const run = createTestRun({ id: "ui-run", jobId: job.id });
-    expect(formatJob(job)).toContain("next=none");
-    expect(renderJobs([job])).toHaveLength(1);
+    expect(formatJob(job)).toContain("test-job");
+    expect(renderJobs([job]).join("\n")).toContain("NEXT/LAST");
     expect(createJobsView([job]).render(80).join("\n")).toContain("test-job");
-    expect(renderJobDetail(job)).toContain('"ui-job"');
+    expect(renderJobDetail(job)).toContain("Job ID");
+    expect(renderJobDetail(job)).toContain("ui-job");
     expect(createJobDetailView(job).render(80).join("\n")).toContain("ui-job");
     expect(formatRun(run)).toContain("ui-run");
-    expect(renderRunHistory([run])).toHaveLength(1);
+    expect(renderRunHistory([run])).toHaveLength(2);
     expect(createRunHistoryView([run]).render(80).join("\n")).toContain("ui-run");
     expect(
       formatStatus({
@@ -31,7 +32,7 @@ describe("TUI presentation adapters", () => {
         runningRuns: 0,
         enforcement: { toolAndPathPolicy: "active", osSandbox: "disabled" },
       }),
-    ).toContain("queue=1");
+    ).toContain("Queue 1");
     expect(
       createStatusView({
         databaseState: "ready",
@@ -46,7 +47,7 @@ describe("TUI presentation adapters", () => {
       })
         .render(80)
         .join("\n"),
-    ).toContain("queue=1");
+    ).toContain("Queue 1");
   });
 
   it("validates create-dialog values", () => {

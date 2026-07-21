@@ -39,7 +39,9 @@ export function buildNaturalChronosPrompt(args: string): string {
 /** Parse both the documented JSON form and the human-friendly command form. */
 export function parseChronosCommand(args: string): unknown {
   const text = args.trim();
-  if (!text) return { action: "health" };
+  // Bare /chronos opens the expanded workspace; /chronos status remains the
+  // explicit health command.
+  if (!text) return { action: "list" };
   if (text.startsWith("{")) {
     try {
       return JSON.parse(text);

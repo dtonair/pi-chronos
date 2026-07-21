@@ -1,12 +1,13 @@
 import type { Job } from "../domain/job.js";
 import type { Run } from "../domain/run.js";
+import { renderJobTable } from "./jobs-view.js";
+import { formatRun as formatHistoryRun } from "./run-history-view.js";
+
+/** Compatibility formatter retained under the original export name. */
 export function formatJob(job: Job): string {
-  return `${job.definition.name} [${job.status}] next=${job.nextRunAt ? new Date(job.nextRunAt).toISOString() : "none"}`;
+  return renderJobTable([job], { width: 200 }).at(-1) ?? job.definition.name;
 }
+
 export function formatRun(run: Run): string {
-  const category = run.failureCode ? ` category=${run.failureCode}` : "";
-  const completion = run.output?.completionSummary
-    ? ` completion=${run.output.completionSummary}`
-    : "";
-  return `${run.id} ${run.status} ${new Date(run.occurrenceAt).toISOString()}${category}${completion}`;
+  return formatHistoryRun(run);
 }

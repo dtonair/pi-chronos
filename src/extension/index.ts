@@ -4,21 +4,95 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import type { SchedulerHealth } from "../api/result.js";
 import { SchedulerToolInputSchema } from "../api/schemas.js";
 import { loadGlobalConfig } from "../config/load.js";
 import { chronosConfigPath, chronosDataDir, chronosDbPath } from "../config/paths.js";
 import { ChronosError, ChronosErrorCode } from "../domain/errors.js";
-import { createApprovalDiffView } from "../ui/approval-dialog.js";
+import type { Job } from "../domain/job.js";
+import type { Run } from "../domain/run.js";
+import type { ImportDiff } from "../security/import-diff.js";
+import { formatApprovalDiff } from "../ui/approval-dialog.js";
 import {
   buildNaturalChronosPrompt,
   isNaturalChronosRequest,
   parseChronosCommand,
 } from "../ui/commands.js";
-import { createJobDetailView } from "../ui/job-detail-view.js";
-import { createJobsView } from "../ui/jobs-view.js";
-import { createRunHistoryView } from "../ui/run-history-view.js";
-import { createStatusView } from "../ui/status.js";
+import { actionNotification } from "../ui/notifications.js";
+import {
+  type ChronosWorkspaceState,
+  createInitialWorkspaceState,
+  mapJobToDetail,
+  mapJobToListItem,
+  mapRunToHistoryItem,
+} from "../ui/view-models.js";
+import { createChronosWorkspaceView } from "../ui/workspace-view.js";
 import { type ChronosRuntime, createChronosRuntime } from "./runtime.js";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isJob(value: unknown): value is Job {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    isRecord(value.definition) &&
+    typeof value.definition.name === "string" &&
+    typeof value.status === "string" &&
+    typeof value.fingerprint === "string"
+  );
+}
+
+function isRun(value: unknown): value is Run {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.jobId === "string" &&
+    typeof value.status === "string" &&
+    typeof value.occurrenceAt === "number" &&
+    isRecord(value.timing)
+  );
+}
+
+function isHealth(value: unknown): value is SchedulerHealth {
+  return (
+    isRecord(value) &&
+    (value.databaseState === "closed" ||
+      value.databaseState === "ready" ||
+      value.databaseState === "failed") &&
+    (value.timerState === "stopped" ||
+      value.timerState === "armed" ||
+      value.timerState === "waking") &&
+    typeof value.queueDepth === "number" &&
+    typeof value.activeChildren === "number" &&
+    typeof value.staleLeases === "number" &&
+    typeof value.activeJobs === "number" &&
+    typeof value.pendingApprovalJobs === "number" &&
+    typeof value.runningRuns === "number" &&
+    isRecord(value.enforcement)
+  );
+}
+
+function isJobListData(value: unknown): value is { jobs: Job[]; nextCursor?: string } {
+  return isRecord(value) && Array.isArray(value.jobs) && value.jobs.every(isJob);
+}
+
+function isRunHistoryData(value: unknown): value is { runs: Run[]; nextCursor?: string } {
+  return isRecord(value) && Array.isArray(value.runs) && value.runs.every(isRun);
+}
+
+function isImportDiff(value: unknown): value is ImportDiff {
+  return isRecord(value) && typeof value.field === "string" && typeof value.sensitive === "boolean";
+}
+
+function importDiffLines(value: unknown): string[] {
+  if (!isRecord(value) || !isRecord(value.diffs)) return [];
+  const diffs = Object.values(value.diffs).flatMap((entry) =>
+    Array.isArray(entry) ? entry.filter(isImportDiff) : [],
+  );
+  return formatApprovalDiff(diffs).split("\n");
+}
 
 function loadMigrationSql(): string[] {
   const names = ["001_initial.sql", "002_add_metadata_index.sql"];
@@ -45,6 +119,37 @@ export default function chronosExtension(pi: ExtensionAPI): void {
   // Keep the public factory side-effect free and tolerant of minimal host fakes.
   if (typeof pi.registerTool !== "function") return;
   let runtime: ChronosRuntime | undefined;
+  let workspaceState: ChronosWorkspaceState = createInitialWorkspaceState();
+
+  function installWorkspace(ctx: {
+    ui: {
+      setWidget: (
+        name: string,
+        factory: () => Text,
+        options?: { placement: "aboveEditor" | "belowEditor" },
+      ) => void;
+    };
+  }): void {
+    ctx.ui.setWidget("chronos", () => createChronosWorkspaceView(workspaceState), {
+      placement: "aboveEditor",
+    });
+  }
+
+  function updateWorkspace(
+    ctx: {
+      ui: {
+        setWidget: (
+          name: string,
+          factory: () => Text,
+          options?: { placement: "aboveEditor" | "belowEditor" },
+        ) => void;
+      };
+    },
+    patch: Partial<ChronosWorkspaceState>,
+  ): void {
+    workspaceState = { ...workspaceState, ...patch };
+    installWorkspace(ctx);
+  }
 
   pi.registerTool({
     name: "scheduler",
@@ -223,38 +328,76 @@ export default function chronosExtension(pi: ExtensionAPI): void {
         trustedProject: ctx.isProjectTrusted(),
         source: "direct_user",
       });
-      if (ctx.mode === "tui") {
+      const action =
+        isRecord(prepared) && typeof prepared.action === "string" ? prepared.action : "unknown";
+      if (ctx.mode === "tui" && typeof ctx.ui.setWidget === "function") {
         if (!result.ok) {
-          ctx.ui.setWidget("chronos", undefined);
+          // Keep the previous useful workspace visible while surfacing the
+          // recoverable command error in both the widget and notification.
+          updateWorkspace(ctx, {
+            notification: { message: result.error.message, severity: "error" },
+          });
         } else {
-          const action = (prepared as { action?: string }).action;
-          const data = result.data as Record<string, unknown>;
-          if (action === "list" && Array.isArray(data.jobs)) {
-            ctx.ui.setWidget("chronos", () => createJobsView(data.jobs as never[]), {
-              placement: "aboveEditor",
+          const data = result.data;
+          const now = Date.now();
+          if (action === "list" && isJobListData(data)) {
+            updateWorkspace(ctx, {
+              mode: "jobs",
+              jobs: data.jobs.map((job) => mapJobToListItem(job, now)),
+              hasMoreJobs: data.nextCursor !== undefined,
+              lastUpdatedAt: now,
+              notification: { message: actionNotification(action, data), severity: "info" },
             });
-          } else if (action === "get") {
-            ctx.ui.setWidget("chronos", () => createJobDetailView(data as never), {
-              placement: "aboveEditor",
+          } else if (action === "get" && isJob(data)) {
+            updateWorkspace(ctx, {
+              mode: "job-detail",
+              selectedJob: mapJobToDetail(data, now),
+              lastUpdatedAt: now,
+              notification: { message: actionNotification(action, data), severity: "info" },
             });
-          } else if (action === "history" && Array.isArray(data.runs)) {
-            ctx.ui.setWidget("chronos", () => createRunHistoryView(data.runs as never[]), {
-              placement: "aboveEditor",
+          } else if (action === "history" && isRunHistoryData(data)) {
+            updateWorkspace(ctx, {
+              mode: "history",
+              runs: data.runs.map(mapRunToHistoryItem),
+              lastUpdatedAt: now,
+              notification: { message: actionNotification(action), severity: "info" },
             });
-          } else if (action === "health") {
-            ctx.ui.setWidget("chronos", () => createStatusView(data as never), {
-              placement: "aboveEditor",
+          } else if (action === "health" && isHealth(data)) {
+            updateWorkspace(ctx, {
+              mode: "health",
+              health: data,
+              lastUpdatedAt: now,
+              notification: { message: actionNotification(action), severity: "info" },
             });
-          } else if (action === "import" && data.diffs && typeof data.diffs === "object") {
-            const diffs = Object.values(data.diffs as Record<string, unknown>).flat();
-            ctx.ui.setWidget("chronos", () => createApprovalDiffView(diffs as never[]), {
-              placement: "aboveEditor",
+          } else if (action === "import") {
+            updateWorkspace(ctx, {
+              mode: "approval",
+              approvalLines: importDiffLines(data),
+              lastUpdatedAt: now,
+              notification: { message: actionNotification(action, data), severity: "info" },
+            });
+          } else if (isJob(data)) {
+            const item = mapJobToListItem(data, now);
+            updateWorkspace(ctx, {
+              jobs: workspaceState.jobs.map((existing) =>
+                existing.id === item.id ? item : existing,
+              ),
+              selectedJob:
+                workspaceState.selectedJob?.id === item.id
+                  ? mapJobToDetail(data, now)
+                  : workspaceState.selectedJob,
+              lastUpdatedAt: now,
+              notification: { message: actionNotification(action, data), severity: "info" },
+            });
+          } else {
+            updateWorkspace(ctx, {
+              notification: { message: actionNotification(action, data), severity: "info" },
             });
           }
         }
       }
       ctx.ui.notify(
-        result.ok ? "Chronos action completed" : result.error.message,
+        result.ok ? actionNotification(action, result.data) : result.error.message,
         result.ok ? "info" : "error",
       );
     },
@@ -279,7 +422,30 @@ export default function chronosExtension(pi: ExtensionAPI): void {
       });
       candidate.start();
       runtime = candidate;
-      if (ctx.hasUI) ctx.ui.setStatus("chronos", "Chronos: active");
+      if (ctx.hasUI) {
+        workspaceState = createInitialWorkspaceState();
+        // Hydrate the compact dashboard from authoritative router responses,
+        // then install the single stable workspace widget.
+        const [healthResult, listResult] = await Promise.all([
+          candidate.router.route({ action: "health" }, "pi-user", "tui"),
+          candidate.router.route({ action: "list", scope: "user" }, "pi-user", "tui"),
+        ]);
+        const health =
+          healthResult.ok && isHealth(healthResult.data) ? healthResult.data : undefined;
+        const jobs = listResult.ok && isJobListData(listResult.data) ? listResult.data.jobs : [];
+        workspaceState = {
+          ...workspaceState,
+          mode: "compact",
+          health,
+          jobs: jobs.map((job) => mapJobToListItem(job)),
+          hasMoreJobs:
+            listResult.ok && isJobListData(listResult.data)
+              ? listResult.data.nextCursor !== undefined
+              : undefined,
+          lastUpdatedAt: Date.now(),
+        };
+        installWorkspace(ctx);
+      }
     } catch (error) {
       await candidate?.stop();
       runtime = undefined;
@@ -291,10 +457,9 @@ export default function chronosExtension(pi: ExtensionAPI): void {
     }
   });
 
-  pi.on("session_shutdown", async (_event, ctx) => {
+  pi.on("session_shutdown", async (_event, _ctx) => {
     await runtime?.stop();
     runtime = undefined;
-    if (ctx.hasUI) ctx.ui.setStatus("chronos", undefined);
   });
 
   // CONFIG_DIR_NAME is intentionally referenced at this boundary so project

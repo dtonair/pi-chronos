@@ -7,7 +7,7 @@ import {
 
 describe("/chronos command parser", () => {
   it("supports empty, human, JSON, and option forms", () => {
-    expect(parseChronosCommand("")).toEqual({ action: "health" });
+    expect(parseChronosCommand("")).toEqual({ action: "list" });
     expect(parseChronosCommand("status")).toEqual({ action: "health" });
     expect(parseChronosCommand("show job-1")).toEqual({ action: "get", jobId: "job-1" });
     expect(parseChronosCommand("cancel run-1")).toEqual({ action: "cancel_run", runId: "run-1" });
